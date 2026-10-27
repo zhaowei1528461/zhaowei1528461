@@ -1,0 +1,79 @@
+{
+  "mean_ADE_m": 5610.38467940099,
+  "mean_FDE_m": 8756.008081639993,
+  "minADE_m": 4970.203720097159,
+  "minFDE_m": 4071.6646682835526,
+  "endpoint_diversity_m": 12939.871271043354,
+  "constant_velocity_ADE_m": 2.24553552944326,
+  "constant_velocity_FDE_m": 5.2989110852914205,
+  "noise_prediction_loss": 0.45818859338760376,
+  "evaluated_windows": 8,
+  "evaluation_split": "train",
+  "samples_per_window": 4,
+  "sampling_method": "ddim",
+  "sampling_steps": 10,
+  "limited_evaluation": true,
+  "sampling_seconds": 0.20199880000000014,
+  "seconds_per_window": 0.025249850000000018,
+  "motion_valid_rate": 0.0,
+  "motion_limits": {
+    "max_speed": 40.0,
+    "max_accel": 4.0,
+    "max_decel": 8.0,
+    "max_jerk": 15.0,
+    "max_yaw_rate": 1.0,
+    "max_lateral_accel": 4.0
+  },
+  "motion_validity_definition": "sampled kinematics under provisional configured thresholds; not calibrated vehicle validity",
+  "road_valid_rate": null,
+  "road_checked_samples": 0,
+  "map_missing_window_rate": 1.0,
+  "road_validity_definition": "sampled footprint in current SUMO lane buffers; not simulator verification",
+  "oracle_metric_definition": "minADE and minFDE independently select the best of K against recorded labels",
+  "exported_candidates": [
+    {
+      "json": "C:\\Users\\MEC\\Desktop\\dreamer_huifang_10_21\\docs\\stage4_diffusion_validation\\real_train_samples\\candidate_0000.json",
+      "npz": "C:\\Users\\MEC\\Desktop\\dreamer_huifang_10_21\\docs\\stage4_diffusion_validation\\real_train_samples\\candidate_0000.npz"
+    }
+  ],
+  "plots": [
+    "C:\\Users\\MEC\\Desktop\\dreamer_huifang_10_21\\docs\\stage4_diffusion_validation\\real_train_samples\\candidate_0000.png"
+  ],
+  "simulation_verified": false,
+  "exit_code": 0,
+  "dataset_source": "recorded_sumo",
+  "generation": {
+    "checkpoint_sha256": "92c31dfea3dfeb68cdf494d1a900ffee6f0633c3ad47fb3be076f1d03b439ba6",
+    "normalizer_id": "normalizer-07539a836907245a5b2e",
+    "dataset_fingerprint": {
+      "window_manifest_sha256": "cae62201c2655dea47e22d11f3ab6109dd8fed9f03c40801a190d3f27c08ec3b",
+      "split_manifest_sha256": "5754fe7c0483453007161aefeb35808e13b2d94a2b243efde017ba0a1db1718c",
+      "index_sha256": "174e8206db5bc0ff563122ebe62b09bfd21fda5b5cedd80b25ffa193fb6fbbc5",
+      "normalizer_id": "normalizer-07539a836907245a5b2e",
+      "window_config": {
+        "history": 11,
+        "future": 30,
+        "dt": 0.2,
+        "stride": 1
+      },
+      "coordinate_frame": "ego-centric",
+      "map_binding_sha256": "2920fb4f6c87b0be647ee95482a7e0dd8611f90d4bf1be43e6b39b213750d5ac"
+    },
+    "model_config": {
+      "history": 11,
+      "future": 30,
+      "dt": 0.2,
+      "base_dim": 16,
+      "dim_mults": [
+        1,
+        2
+      ],
+      "condition_dim": 32,
+      "diffusion_steps": 20,
+      "beta_schedule": "cosine"
+    },
+    "sampling_method": "ddim",
+    "sampling_steps": 10
+  },
+  "report_path": "C:\\Users\\MEC\\Desktop\\dreamer_huifang_10_21\\docs\\stage4_diffusion_validation\\real_train_samples\\evaluation.json"
+}

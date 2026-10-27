@@ -1,0 +1,36 @@
+{
+  "description": "Opt-in target heading correction; legacy ego default retained",
+  "physical_constraints_changed": false,
+  "rssm_training_changed": false,
+  "tests_passed": 124,
+  "files": {
+    "embodied/envs/scene_parameters.py": {
+      "before_sha256_normalized_LF": "4a09c1798e2bc4a3218d2a691e24d50983a8276b4226a2bf844d036b0b81c4de",
+      "after_sha256_normalized_LF": "b459cde85c3f98070b6c1c11dd942b07b35a818a2d8887bf134d838064e32f56"
+    },
+    "embodied/envs/scene_search.py": {
+      "before_sha256_normalized_LF": "a152b8151e4883b130208f4cf3d165194fbd88cb15edfd21582c416a35449446",
+      "after_sha256_normalized_LF": "a30cb9d738a7dedace66b94c818f7ccbebbfe838b77564743e081c5be8a02334"
+    },
+    "embodied/envs/run_scene_search.py": {
+      "before_sha256_normalized_LF": "3bc6f9978b26990ac16ab371cb71ec7c06a7d9f79e45a19b01ef93a946c2438c",
+      "after_sha256_normalized_LF": "4b2d93be40350034c5e736eb12bd97054835b2641317c45ce24cb0b69f07c57e"
+    },
+    "README.md": {
+      "before_sha256_normalized_LF": "b083c20ef1975b65b322a14c8c230d45da1e1129ca31ed725d748752014ea801",
+      "after_sha256_normalized_LF": "c768654fb0db4aebcb684c77511c10c3d567d8d88a6f1dea6fc76e0efb9f6d14"
+    },
+    "docs/long_tail_stage3.md": {
+      "before_sha256_normalized_LF": "b5e5c7d8399b09c19b98878ed34da43a72cff271bd95ded12973a46d17d0c026",
+      "after_sha256_normalized_LF": "8aa54c61371352e1f3faeeaf49176a1b7e9a1c5e188fc8f03c7100dcf6616c7f"
+    },
+    "tests/test_scene_reference_heading.py": {
+      "before_sha256_normalized_LF": null,
+      "after_sha256_normalized_LF": "ed3f69e543bb69f6791318c66602413f45512b5d5b73ad99efa9e7789dc4e642"
+    },
+    "docs/stage3_diagnosis/verify_reference_heading.py": {
+      "before_sha256_normalized_LF": null,
+      "after_sha256_normalized_LF": "92541910593a2375a2c89eae4a8e093f3fed04643e2c90fdd81224bdf439e89b"
+    }
+  }
+}

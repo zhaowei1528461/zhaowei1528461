@@ -1,0 +1,718 @@
+{
+  "purpose": "Replay original rejected candidates; no generator or constraints changed.",
+  "input_sha256": "0652a3fb0e59e6860a8c5bdb5aedb08b729d192317776764fa729a6eedc905cf",
+  "local_environment": {
+    "python": "3.8.3",
+    "numpy": "1.24.4"
+  },
+  "episode": {
+    "frames": 593,
+    "npc_count": 58,
+    "native_dt": 0.2,
+    "window_count": 553
+  },
+  "windows": [
+    {
+      "window": 0,
+      "target": "obs_003",
+      "target_type": "SlowCar1",
+      "limits": {
+        "max_accel": 0.2,
+        "max_decel": 4.0,
+        "max_jerk": 8.0,
+        "max_lateral_accel": 2.5,
+        "max_speed": 4.0,
+        "max_yaw_rate": 0.8
+      },
+      "anchor": 2.2,
+      "heading_difference_deg": 39.83590989910067,
+      "observed_longitudinal_gap": 17.34017864173583,
+      "observed_lateral_gap": -9.864720396230474,
+      "observed_lateral_velocity": 1.114710387998277,
+      "observed_target_anchor_on_road": true,
+      "source_environment": {
+        "numpy": "1.23.5",
+        "platform": "Linux-6.8.0-107-generic-x86_64-with-glibc2.35",
+        "python": "3.10.9"
+      },
+      "methods": {
+        "random": {
+          "evaluations": 256,
+          "valid_count": 0,
+          "failure_counts": {
+            "reverse_motion": 179,
+            "longitudinal_acceleration_limit": 232,
+            "yaw_rate_limit": 210,
+            "speed_limit": 149,
+            "lateral_acceleration_limit": 95,
+            "jerk_limit": 88,
+            "outside_drivable_envelope": 19,
+            "lane_speed_limit": 19
+          },
+          "failure_set_mismatches_with_linux": 0,
+          "max_numeric_metric_difference_with_linux": 0.4273416183580512,
+          "generated_initial_footprint_offroad_count": 94,
+          "fewest_failures_trial": {
+            "parameters": {
+              "initial_gap": 11.292373926678877,
+              "lane_change_duration": 2.710990559140459,
+              "longitudinal_accel": 0.07264884311429531,
+              "relative_speed": -0.17641599033085642,
+              "target_offset": -0.08093389905310286,
+              "trigger_time": 0.29927316595231995
+            },
+            "behavior": "keep_lane",
+            "failures": [
+              "longitudinal_acceleration_limit"
+            ],
+            "min_actual_longitudinal_accel": -0.42494566717361426,
+            "max_actual_longitudinal_accel": 0.31333291867595847,
+            "metrics": {
+              "max_speed": 3.1314073240812017,
+              "max_abs_jerk": 6.708532506610494,
+              "max_lateral_accel": 1.9377681383230398,
+              "max_yaw_rate": 0.6974913278706617,
+              "road_checked": false,
+              "road_check": "sampled_footprint_lane_envelope",
+              "road_grid_spacing": 0.5,
+              "max_validation_dt": 0.10000000000000053,
+              "simulation_verified": false,
+              "rssm_npc_conditioning_supported": false
+            }
+          }
+        },
+        "cem": {
+          "evaluations": 256,
+          "valid_count": 0,
+          "failure_counts": {
+            "reverse_motion": 175,
+            "longitudinal_acceleration_limit": 236,
+            "yaw_rate_limit": 206,
+            "speed_limit": 167,
+            "lateral_acceleration_limit": 106,
+            "jerk_limit": 86,
+            "outside_drivable_envelope": 13,
+            "lane_speed_limit": 13
+          },
+          "failure_set_mismatches_with_linux": 1,
+          "max_numeric_metric_difference_with_linux": 10214.051826551442,
+          "generated_initial_footprint_offroad_count": 136,
+          "fewest_failures_trial": {
+            "parameters": {
+              "initial_gap": 11.292373926678877,
+              "lane_change_duration": 2.710990559140459,
+              "longitudinal_accel": 0.07264884311429531,
+              "relative_speed": -0.17641599033085642,
+              "target_offset": -0.08093389905310286,
+              "trigger_time": 0.29927316595231995
+            },
+            "behavior": "keep_lane",
+            "failures": [
+              "longitudinal_acceleration_limit"
+            ],
+            "min_actual_longitudinal_accel": -0.42494566717361426,
+            "max_actual_longitudinal_accel": 0.31333291867595847,
+            "metrics": {
+              "max_speed": 3.1314073240812017,
+              "max_abs_jerk": 6.708532506610494,
+              "max_lateral_accel": 1.9377681383230398,
+              "max_yaw_rate": 0.6974913278706617,
+              "road_checked": false,
+              "road_check": "sampled_footprint_lane_envelope",
+              "road_grid_spacing": 0.5,
+              "max_validation_dt": 0.10000000000000053,
+              "simulation_verified": false,
+              "rssm_npc_conditioning_supported": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "window": 100,
+      "target": "obs_002",
+      "target_type": "npcType",
+      "limits": {
+        "max_accel": 2.2,
+        "max_decel": 4.5,
+        "max_jerk": 8.0,
+        "max_lateral_accel": 2.5,
+        "max_speed": 7.0,
+        "max_yaw_rate": 0.8
+      },
+      "anchor": 22.2,
+      "heading_difference_deg": 28.896882281065,
+      "observed_longitudinal_gap": 8.996168840920483,
+      "observed_lateral_gap": -10.893946139884578,
+      "observed_lateral_velocity": 1.0015988075343634,
+      "observed_target_anchor_on_road": true,
+      "source_environment": {
+        "numpy": "1.23.5",
+        "platform": "Linux-6.8.0-107-generic-x86_64-with-glibc2.35",
+        "python": "3.10.9"
+      },
+      "methods": {
+        "random": {
+          "evaluations": 256,
+          "valid_count": 0,
+          "failure_counts": {
+            "yaw_rate_limit": 228,
+            "reverse_motion": 142,
+            "lateral_acceleration_limit": 106,
+            "jerk_limit": 92,
+            "longitudinal_acceleration_limit": 101,
+            "speed_limit": 32,
+            "outside_drivable_envelope": 20,
+            "lane_speed_limit": 19
+          },
+          "failure_set_mismatches_with_linux": 0,
+          "max_numeric_metric_difference_with_linux": 0.883959365179539,
+          "generated_initial_footprint_offroad_count": 148,
+          "fewest_failures_trial": {
+            "parameters": {
+              "initial_gap": 12.387255535984552,
+              "lane_change_duration": 3.7132715515343597,
+              "longitudinal_accel": 0.43981071760081747,
+              "relative_speed": 0.0029260276402224145,
+              "target_offset": 0.247653346366633,
+              "trigger_time": 0.02479145329279364
+            },
+            "behavior": "keep_lane",
+            "failures": [
+              "yaw_rate_limit"
+            ],
+            "min_actual_longitudinal_accel": -0.6512882470815639,
+            "max_actual_longitudinal_accel": 0.5840646217237061,
+            "metrics": {
+              "max_speed": 2.693378548208076,
+              "max_abs_jerk": 2.3539476234625285,
+              "max_lateral_accel": 1.0524973716546882,
+              "max_yaw_rate": 1.7769639413409801,
+              "road_checked": false,
+              "road_check": "sampled_footprint_lane_envelope",
+              "road_grid_spacing": 0.5,
+              "max_validation_dt": 0.10000000000000053,
+              "simulation_verified": false,
+              "rssm_npc_conditioning_supported": false
+            }
+          }
+        },
+        "cem": {
+          "evaluations": 256,
+          "valid_count": 0,
+          "failure_counts": {
+            "yaw_rate_limit": 218,
+            "reverse_motion": 146,
+            "lateral_acceleration_limit": 111,
+            "jerk_limit": 87,
+            "longitudinal_acceleration_limit": 96,
+            "speed_limit": 54,
+            "outside_drivable_envelope": 25,
+            "lane_speed_limit": 24
+          },
+          "failure_set_mismatches_with_linux": 0,
+          "max_numeric_metric_difference_with_linux": 1.8510297370171074,
+          "generated_initial_footprint_offroad_count": 137,
+          "fewest_failures_trial": {
+            "parameters": {
+              "initial_gap": 12.387255535984552,
+              "lane_change_duration": 3.7132715515343597,
+              "longitudinal_accel": 0.43981071760081747,
+              "relative_speed": 0.0029260276402224145,
+              "target_offset": 0.247653346366633,
+              "trigger_time": 0.02479145329279364
+            },
+            "behavior": "keep_lane",
+            "failures": [
+              "yaw_rate_limit"
+            ],
+            "min_actual_longitudinal_accel": -0.6512882470815639,
+            "max_actual_longitudinal_accel": 0.5840646217237061,
+            "metrics": {
+              "max_speed": 2.693378548208076,
+              "max_abs_jerk": 2.3539476234625285,
+              "max_lateral_accel": 1.0524973716546882,
+              "max_yaw_rate": 1.7769639413409801,
+              "road_checked": false,
+              "road_check": "sampled_footprint_lane_envelope",
+              "road_grid_spacing": 0.5,
+              "max_validation_dt": 0.10000000000000053,
+              "simulation_verified": false,
+              "rssm_npc_conditioning_supported": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "window": 200,
+      "target": "obs_026",
+      "target_type": "SlowCar1",
+      "limits": {
+        "max_accel": 0.2,
+        "max_decel": 4.0,
+        "max_jerk": 8.0,
+        "max_lateral_accel": 2.5,
+        "max_speed": 4.0,
+        "max_yaw_rate": 0.8
+      },
+      "anchor": 42.2,
+      "heading_difference_deg": 41.51787951327822,
+      "observed_longitudinal_gap": 10.840359404707046,
+      "observed_lateral_gap": -4.914911414507113,
+      "observed_lateral_velocity": 1.515791483912298,
+      "observed_target_anchor_on_road": true,
+      "source_environment": {
+        "numpy": "1.23.5",
+        "platform": "Linux-6.8.0-107-generic-x86_64-with-glibc2.35",
+        "python": "3.10.9"
+      },
+      "methods": {
+        "random": {
+          "evaluations": 256,
+          "valid_count": 0,
+          "failure_counts": {
+            "reverse_motion": 199,
+            "longitudinal_acceleration_limit": 235,
+            "yaw_rate_limit": 227,
+            "speed_limit": 98,
+            "lateral_acceleration_limit": 62,
+            "jerk_limit": 48,
+            "outside_drivable_envelope": 16,
+            "lane_speed_limit": 12
+          },
+          "failure_set_mismatches_with_linux": 0,
+          "max_numeric_metric_difference_with_linux": 0.13595475522131917,
+          "generated_initial_footprint_offroad_count": 116,
+          "fewest_failures_trial": {
+            "parameters": {
+              "initial_gap": 18.612055520355327,
+              "lane_change_duration": 3.261541016621779,
+              "longitudinal_accel": -0.09748775011829691,
+              "relative_speed": 1.8824544002922516,
+              "target_offset": -0.2643215090397969,
+              "trigger_time": 0.19022565339187164
+            },
+            "behavior": "cut_in",
+            "failures": [
+              "longitudinal_acceleration_limit"
+            ],
+            "min_actual_longitudinal_accel": -0.8298445584406892,
+            "max_actual_longitudinal_accel": 0.3326037276619179,
+            "metrics": {
+              "max_speed": 2.900279020568382,
+              "max_abs_jerk": 4.124015609904003,
+              "max_lateral_accel": 1.3806177618108355,
+              "max_yaw_rate": 0.6687920001682103,
+              "road_checked": false,
+              "road_check": "sampled_footprint_lane_envelope",
+              "road_grid_spacing": 0.5,
+              "max_validation_dt": 0.10000000000000053,
+              "simulation_verified": false,
+              "rssm_npc_conditioning_supported": false
+            }
+          }
+        },
+        "cem": {
+          "evaluations": 256,
+          "valid_count": 0,
+          "failure_counts": {
+            "reverse_motion": 189,
+            "longitudinal_acceleration_limit": 234,
+            "yaw_rate_limit": 227,
+            "speed_limit": 107,
+            "lateral_acceleration_limit": 64,
+            "jerk_limit": 51,
+            "outside_drivable_envelope": 15,
+            "lane_speed_limit": 14
+          },
+          "failure_set_mismatches_with_linux": 0,
+          "max_numeric_metric_difference_with_linux": 0.5947054906102673,
+          "generated_initial_footprint_offroad_count": 127,
+          "fewest_failures_trial": {
+            "parameters": {
+              "initial_gap": 18.612055520355327,
+              "lane_change_duration": 3.261541016621779,
+              "longitudinal_accel": -0.09748775011829691,
+              "relative_speed": 1.8824544002922516,
+              "target_offset": -0.2643215090397969,
+              "trigger_time": 0.19022565339187164
+            },
+            "behavior": "cut_in",
+            "failures": [
+              "longitudinal_acceleration_limit"
+            ],
+            "min_actual_longitudinal_accel": -0.8298445584406892,
+            "max_actual_longitudinal_accel": 0.3326037276619179,
+            "metrics": {
+              "max_speed": 2.900279020568382,
+              "max_abs_jerk": 4.124015609904003,
+              "max_lateral_accel": 1.3806177618108355,
+              "max_yaw_rate": 0.6687920001682103,
+              "road_checked": false,
+              "road_check": "sampled_footprint_lane_envelope",
+              "road_grid_spacing": 0.5,
+              "max_validation_dt": 0.10000000000000053,
+              "simulation_verified": false,
+              "rssm_npc_conditioning_supported": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "window": 300,
+      "target": "obs_042",
+      "target_type": "SlowCar1",
+      "limits": {
+        "max_accel": 0.2,
+        "max_decel": 4.0,
+        "max_jerk": 8.0,
+        "max_lateral_accel": 2.5,
+        "max_speed": 4.0,
+        "max_yaw_rate": 0.8
+      },
+      "anchor": 62.2,
+      "heading_difference_deg": 28.205555015776962,
+      "observed_longitudinal_gap": 7.437102077957681,
+      "observed_lateral_gap": -5.033300222324643,
+      "observed_lateral_velocity": 1.0802059952627565,
+      "observed_target_anchor_on_road": true,
+      "source_environment": {
+        "numpy": "1.23.5",
+        "platform": "Linux-6.8.0-107-generic-x86_64-with-glibc2.35",
+        "python": "3.10.9"
+      },
+      "methods": {
+        "random": {
+          "evaluations": 256,
+          "valid_count": 0,
+          "failure_counts": {
+            "reverse_motion": 201,
+            "longitudinal_acceleration_limit": 245,
+            "yaw_rate_limit": 233,
+            "speed_limit": 98,
+            "lateral_acceleration_limit": 26,
+            "jerk_limit": 26,
+            "outside_drivable_envelope": 8,
+            "lane_speed_limit": 4
+          },
+          "failure_set_mismatches_with_linux": 0,
+          "max_numeric_metric_difference_with_linux": 0.13240243969261734,
+          "generated_initial_footprint_offroad_count": 143,
+          "fewest_failures_trial": {
+            "parameters": {
+              "initial_gap": 6.146478245972491,
+              "lane_change_duration": 4.44525762764591,
+              "longitudinal_accel": 0.10586239514411977,
+              "relative_speed": 1.7312110615208518,
+              "target_offset": -0.21074159266050124,
+              "trigger_time": 1.4717925600995163
+            },
+            "behavior": "keep_lane",
+            "failures": [
+              "longitudinal_acceleration_limit"
+            ],
+            "min_actual_longitudinal_accel": -0.3757633746145117,
+            "max_actual_longitudinal_accel": 0.5041575984264884,
+            "metrics": {
+              "max_speed": 2.4739041479608375,
+              "max_abs_jerk": 3.1978644021991784,
+              "max_lateral_accel": 1.4808042431173651,
+              "max_yaw_rate": 0.7567075008631305,
+              "road_checked": false,
+              "road_check": "sampled_footprint_lane_envelope",
+              "road_grid_spacing": 0.5,
+              "max_validation_dt": 0.10000000000000053,
+              "simulation_verified": false,
+              "rssm_npc_conditioning_supported": false
+            }
+          }
+        },
+        "cem": {
+          "evaluations": 256,
+          "valid_count": 0,
+          "failure_counts": {
+            "reverse_motion": 194,
+            "longitudinal_acceleration_limit": 246,
+            "yaw_rate_limit": 224,
+            "speed_limit": 108,
+            "lateral_acceleration_limit": 37,
+            "jerk_limit": 39,
+            "outside_drivable_envelope": 8,
+            "lane_speed_limit": 6
+          },
+          "failure_set_mismatches_with_linux": 0,
+          "max_numeric_metric_difference_with_linux": 0.9513351359623243,
+          "generated_initial_footprint_offroad_count": 132,
+          "fewest_failures_trial": {
+            "parameters": {
+              "initial_gap": 6.146478245972491,
+              "lane_change_duration": 4.44525762764591,
+              "longitudinal_accel": 0.10586239514411977,
+              "relative_speed": 1.7312110615208518,
+              "target_offset": -0.21074159266050124,
+              "trigger_time": 1.4717925600995163
+            },
+            "behavior": "keep_lane",
+            "failures": [
+              "longitudinal_acceleration_limit"
+            ],
+            "min_actual_longitudinal_accel": -0.3757633746145117,
+            "max_actual_longitudinal_accel": 0.5041575984264884,
+            "metrics": {
+              "max_speed": 2.4739041479608375,
+              "max_abs_jerk": 3.1978644021991784,
+              "max_lateral_accel": 1.4808042431173651,
+              "max_yaw_rate": 0.7567075008631305,
+              "road_checked": false,
+              "road_check": "sampled_footprint_lane_envelope",
+              "road_grid_spacing": 0.5,
+              "max_validation_dt": 0.10000000000000053,
+              "simulation_verified": false,
+              "rssm_npc_conditioning_supported": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "window": 400,
+      "target": "obs_064",
+      "target_type": "FastCar",
+      "limits": {
+        "max_accel": 4.0,
+        "max_decel": 5.0,
+        "max_jerk": 8.0,
+        "max_lateral_accel": 2.5,
+        "max_speed": 5.0,
+        "max_yaw_rate": 0.8
+      },
+      "anchor": 82.2,
+      "heading_difference_deg": 4.835824914109182,
+      "observed_longitudinal_gap": -2.8574578223810425,
+      "observed_lateral_gap": -6.3377987635751145,
+      "observed_lateral_velocity": 0.2743385831238317,
+      "observed_target_anchor_on_road": true,
+      "source_environment": {
+        "numpy": "1.23.5",
+        "platform": "Linux-6.8.0-107-generic-x86_64-with-glibc2.35",
+        "python": "3.10.9"
+      },
+      "methods": {
+        "random": {
+          "evaluations": 256,
+          "valid_count": 0,
+          "failure_counts": {
+            "outside_drivable_envelope": 41,
+            "reverse_motion": 139,
+            "speed_limit": 82,
+            "yaw_rate_limit": 181,
+            "lateral_acceleration_limit": 54,
+            "jerk_limit": 51,
+            "longitudinal_acceleration_limit": 6,
+            "npc_background_overlap": 8,
+            "lane_speed_limit": 8
+          },
+          "failure_set_mismatches_with_linux": 0,
+          "max_numeric_metric_difference_with_linux": 0.3516936034668863,
+          "generated_initial_footprint_offroad_count": 14,
+          "fewest_failures_trial": {
+            "parameters": {
+              "initial_gap": 12.387255535984552,
+              "lane_change_duration": 3.7132715515343597,
+              "longitudinal_accel": 0.43981071760081747,
+              "relative_speed": -0.26355529084223805,
+              "target_offset": 0.247653346366633,
+              "trigger_time": 0.02479145329279364
+            },
+            "behavior": "keep_lane",
+            "failures": [
+              "outside_drivable_envelope"
+            ],
+            "min_actual_longitudinal_accel": -0.03191411300311608,
+            "max_actual_longitudinal_accel": 0.44117991131000267,
+            "metrics": {
+              "max_speed": 2.7047637173915207,
+              "max_abs_jerk": 0.8444678702987711,
+              "max_lateral_accel": 0.332822995654332,
+              "max_yaw_rate": 0.7436938264470401,
+              "road_checked": true,
+              "road_check": "sampled_footprint_lane_envelope",
+              "road_grid_spacing": 0.5,
+              "max_validation_dt": 0.10000000000000053,
+              "simulation_verified": false,
+              "rssm_npc_conditioning_supported": false,
+              "minimum_matched_lane_speed_limit": 13.89
+            }
+          }
+        },
+        "cem": {
+          "evaluations": 256,
+          "valid_count": 0,
+          "failure_counts": {
+            "outside_drivable_envelope": 31,
+            "reverse_motion": 144,
+            "speed_limit": 109,
+            "yaw_rate_limit": 189,
+            "lateral_acceleration_limit": 60,
+            "jerk_limit": 51,
+            "longitudinal_acceleration_limit": 11,
+            "npc_background_overlap": 10,
+            "lane_speed_limit": 6
+          },
+          "failure_set_mismatches_with_linux": 0,
+          "max_numeric_metric_difference_with_linux": 0.2167226121673993,
+          "generated_initial_footprint_offroad_count": 21,
+          "fewest_failures_trial": {
+            "parameters": {
+              "initial_gap": 12.387255535984552,
+              "lane_change_duration": 3.7132715515343597,
+              "longitudinal_accel": 0.43981071760081747,
+              "relative_speed": -0.26355529084223805,
+              "target_offset": 0.247653346366633,
+              "trigger_time": 0.02479145329279364
+            },
+            "behavior": "keep_lane",
+            "failures": [
+              "outside_drivable_envelope"
+            ],
+            "min_actual_longitudinal_accel": -0.03191411300311608,
+            "max_actual_longitudinal_accel": 0.44117991131000267,
+            "metrics": {
+              "max_speed": 2.7047637173915207,
+              "max_abs_jerk": 0.8444678702987711,
+              "max_lateral_accel": 0.332822995654332,
+              "max_yaw_rate": 0.7436938264470401,
+              "road_checked": true,
+              "road_check": "sampled_footprint_lane_envelope",
+              "road_grid_spacing": 0.5,
+              "max_validation_dt": 0.10000000000000053,
+              "simulation_verified": false,
+              "rssm_npc_conditioning_supported": false,
+              "minimum_matched_lane_speed_limit": 13.89
+            }
+          }
+        }
+      }
+    },
+    {
+      "window": 500,
+      "target": "obs_019",
+      "target_type": "SlowCar1",
+      "limits": {
+        "max_accel": 0.2,
+        "max_decel": 4.0,
+        "max_jerk": 8.0,
+        "max_lateral_accel": 2.5,
+        "max_speed": 4.0,
+        "max_yaw_rate": 0.8
+      },
+      "anchor": 102.2,
+      "heading_difference_deg": 11.988326482177422,
+      "observed_longitudinal_gap": -2.303400140536039,
+      "observed_lateral_gap": -3.3870801672564887,
+      "observed_lateral_velocity": 0.15167607437883046,
+      "observed_target_anchor_on_road": true,
+      "source_environment": {
+        "numpy": "1.23.5",
+        "platform": "Linux-6.8.0-107-generic-x86_64-with-glibc2.35",
+        "python": "3.10.9"
+      },
+      "methods": {
+        "random": {
+          "evaluations": 256,
+          "valid_count": 0,
+          "failure_counts": {
+            "reverse_motion": 179,
+            "longitudinal_acceleration_limit": 204,
+            "yaw_rate_limit": 159,
+            "speed_limit": 87,
+            "lateral_acceleration_limit": 10,
+            "jerk_limit": 12,
+            "outside_drivable_envelope": 48,
+            "lane_speed_limit": 41,
+            "npc_background_overlap": 3
+          },
+          "failure_set_mismatches_with_linux": 0,
+          "max_numeric_metric_difference_with_linux": 0.1652775712672483,
+          "generated_initial_footprint_offroad_count": 147,
+          "fewest_failures_trial": {
+            "parameters": {
+              "initial_gap": 6.204192546653192,
+              "lane_change_duration": 3.4041775766542166,
+              "longitudinal_accel": 0.14617255253900518,
+              "relative_speed": 0.01332978093084547,
+              "target_offset": -0.23551366296831164,
+              "trigger_time": 0.2866654101901122
+            },
+            "behavior": "cut_in",
+            "failures": [
+              "longitudinal_acceleration_limit"
+            ],
+            "min_actual_longitudinal_accel": -0.37374705971212313,
+            "max_actual_longitudinal_accel": 0.6582764430860715,
+            "metrics": {
+              "max_speed": 3.165933110375959,
+              "max_abs_jerk": 4.413114378840398,
+              "max_lateral_accel": 1.4537352729701287,
+              "max_yaw_rate": 0.5174716835013036,
+              "road_checked": false,
+              "road_check": "sampled_footprint_lane_envelope",
+              "road_grid_spacing": 0.5,
+              "max_validation_dt": 0.10000000000000053,
+              "simulation_verified": false,
+              "rssm_npc_conditioning_supported": false
+            }
+          }
+        },
+        "cem": {
+          "evaluations": 256,
+          "valid_count": 0,
+          "failure_counts": {
+            "reverse_motion": 175,
+            "longitudinal_acceleration_limit": 217,
+            "yaw_rate_limit": 163,
+            "speed_limit": 117,
+            "lateral_acceleration_limit": 13,
+            "jerk_limit": 20,
+            "outside_drivable_envelope": 31,
+            "lane_speed_limit": 25,
+            "npc_background_overlap": 1
+          },
+          "failure_set_mismatches_with_linux": 0,
+          "max_numeric_metric_difference_with_linux": 0.2803087643048876,
+          "generated_initial_footprint_offroad_count": 141,
+          "fewest_failures_trial": {
+            "parameters": {
+              "initial_gap": 6.204192546653192,
+              "lane_change_duration": 3.4041775766542166,
+              "longitudinal_accel": 0.14617255253900518,
+              "relative_speed": 0.01332978093084547,
+              "target_offset": -0.23551366296831164,
+              "trigger_time": 0.2866654101901122
+            },
+            "behavior": "cut_in",
+            "failures": [
+              "longitudinal_acceleration_limit"
+            ],
+            "min_actual_longitudinal_accel": -0.37374705971212313,
+            "max_actual_longitudinal_accel": 0.6582764430860715,
+            "metrics": {
+              "max_speed": 3.165933110375959,
+              "max_abs_jerk": 4.413114378840398,
+              "max_lateral_accel": 1.4537352729701287,
+              "max_yaw_rate": 0.5174716835013036,
+              "road_checked": false,
+              "road_check": "sampled_footprint_lane_envelope",
+              "road_grid_spacing": 0.5,
+              "max_validation_dt": 0.10000000000000053,
+              "simulation_verified": false,
+              "rssm_npc_conditioning_supported": false
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "patch_dry_run": true,
+  "patch_applied_to_before_snapshot": true,
+  "all_four_resulting_files_match": true,
+  "zip_crc_passed": true,
+  "files": {
+    "trajectory_window_preparation.patch": {
+      "bytes": 54485,
+      "sha256": "338bc397ae39f718d8e690f538646d647aa924cb51508d0e451c1372427342b1"
+    },
+    "trajectory_window_preparation.zip": {
+      "bytes": 21424,
+      "sha256": "1fa9f3530c839b29c1281ec65cf6defda046371d1619f77cdd93b7aee9eb1df8"
+    }
+  }
+}

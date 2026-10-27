@@ -1,0 +1,45 @@
+{
+  "review_type": "static source inspection; not PyTorch runtime validation",
+  "python": "3.8.3",
+  "python_files_parsed": 46,
+  "syntax_errors": [],
+  "local_dependencies": {
+    "torch": false,
+    "einops": false,
+    "torch_geometric": false,
+    "configargparse": false,
+    "nuscenes": false
+  },
+  "uploaded_dataset_package_present": false,
+  "uploaded_checkpoint_files": [],
+  "source_sha256": {
+    "models/diffusion.py": "20a56d638119eb4e93179c15600cf4751b27c114b77dc5a542549edb7691ce66",
+    "models/temporal.py": "0f085a10aab14dcd4a8e46180545db6578b1e2196922d436eff94d4e7af50cab",
+    "models/helpers.py": "726e20a80e67880436e36a67ab61076227f4572df0602ccdc91e427b34dd8aaf",
+    "models/traffic_model.py": "fe3f3dd3169acb4c30b2a85b3f1c064aecdd3e5c9c0125246816193212e5edc5",
+    "scripts/train_diffusion.py": "059d244c8b41b9c4b8a70aba5eb8267f541cbffcda23757bb64dcdad6ae78c42",
+    "utils/config.py": "072fc17cfc71ebcf59b251e8bd57078b0fe353d20df59e6c87be2d1631ab4500",
+    "utils/torch.py": "d465752be7c1fb84722beb00211fd98ab38ddcc743669747cbdb24c9d5853f09"
+  },
+  "schedule_index_formula_check": {
+    "method": "NumPy formula check using a four-step linear schedule",
+    "training_sampled_timesteps": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "stored_padded_schedule_timesteps": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "q_sample_at_t2_uses_alpha_bar": 0.7200000000000001,
+    "posterior_expected_c1_for_t2": 0.6776309271789387,
+    "posterior_trimmed_array_at_t2": 0.5132226637644297,
+    "posterior_trimmed_array_at_t2_actually_corresponds_to_schedule_step": 3,
+    "indices_match": false
+  }
+}

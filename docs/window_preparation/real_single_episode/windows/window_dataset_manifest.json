@@ -1,0 +1,67 @@
+{
+  "artifact_type": "trajectory_window_dataset",
+  "schema_version": 1,
+  "preparation_exit_code": 0,
+  "source_manifest_path": "C:\\Users\\MEC\\Desktop\\dreamer_huifang_10_21\\docs\\window_preparation\\real_single_episode\\split\\split_manifest.json",
+  "source_manifest_sha256": "5754fe7c0483453007161aefeb35808e13b2d94a2b243efde017ba0a1db1718c",
+  "input_root": "C:\\Users\\MEC\\Desktop\\dreamer_huifang_10_21\\docs\\stage3_uploaded_debug\\sumo_fpi_log\\20261021-105954_osrp_sumo_lag_vector_danger_sumo_None_0\\posttrain_episode_pool",
+  "window_config": {
+    "history": 11,
+    "future": 30,
+    "dt": 0.2,
+    "stride": 1
+  },
+  "coordinate_frame": "ego-centric",
+  "vehicle_fields": [
+    "x",
+    "y",
+    "vx",
+    "vy",
+    "yaw",
+    "a",
+    "length",
+    "width"
+  ],
+  "position_reference": "as_recorded; see per-episode source provenance",
+  "target_rule": "All eight fields finite and masked throughout history and future",
+  "ego_conditioning": "History only; future ego excluded from normalizer",
+  "index_path": "C:\\Users\\MEC\\Desktop\\dreamer_huifang_10_21\\docs\\window_preparation\\real_single_episode\\windows\\window_index.jsonl",
+  "index_sha256": "174e8206db5bc0ff563122ebe62b09bfd21fda5b5cedd80b25ffa193fb6fbbc5",
+  "normalizer": {
+    "fitted": true,
+    "coordinate_frame": "ego-centric",
+    "fit_scope": "Eligible train windows only; ego history plus complete target NPC history/future; overlapping windows contribute repeatedly; future ego is excluded",
+    "normalizer_id": "normalizer-07539a836907245a5b2e",
+    "path": "C:\\Users\\MEC\\Desktop\\dreamer_huifang_10_21\\docs\\window_preparation\\real_single_episode\\windows\\normalizer.json",
+    "training_state_count": 224889,
+    "training_episode_ids": [
+      "c4c745e14ccbd182d2815682"
+    ]
+  },
+  "leakage_check": {
+    "passed": true,
+    "overlap_counts": {
+      "train_val": {
+        "episode_ids": 0,
+        "lineage_tokens": 0,
+        "parent_groups": 0
+      },
+      "train_test": {
+        "episode_ids": 0,
+        "lineage_tokens": 0,
+        "parent_groups": 0
+      },
+      "val_test": {
+        "episode_ids": 0,
+        "lineage_tokens": 0,
+        "parent_groups": 0
+      }
+    }
+  },
+  "split_window_counts": {
+    "train": 552,
+    "val": 0,
+    "test": 0
+  },
+  "tensors_materialized": false
+}

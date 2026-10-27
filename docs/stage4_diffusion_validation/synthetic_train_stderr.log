@@ -1,0 +1,4 @@
+[train epoch=1 step=1] loss=1.194357
+[train epoch=5 step=20] loss=0.557429
+[train epoch=10 step=40] loss=0.412847
+[train epoch=15 step=60] loss=0.545320

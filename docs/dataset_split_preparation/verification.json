@@ -1,0 +1,86 @@
+{
+  "legacy_split_exact_comparisons": 640,
+  "server_full_pool_available": false,
+  "synthetic_format_fixture": {
+    "purpose": "Generated unit-test records, not actual SUMO executions or server statistics",
+    "episodes": 60,
+    "parent_groups": 20,
+    "splits": {
+      "train": {
+        "episodes": 48,
+        "parent_groups": 16
+      },
+      "val": {
+        "episodes": 6,
+        "parent_groups": 2
+      },
+      "test": {
+        "episodes": 6,
+        "parent_groups": 2
+      }
+    },
+    "leakage_check": {
+      "passed": true,
+      "overlap_counts": {
+        "train_val": {
+          "episode_ids": 0,
+          "lineage_tokens": 0,
+          "parent_groups": 0
+        },
+        "train_test": {
+          "episode_ids": 0,
+          "lineage_tokens": 0,
+          "parent_groups": 0
+        },
+        "val_test": {
+          "episode_ids": 0,
+          "lineage_tokens": 0,
+          "parent_groups": 0
+        }
+      }
+    },
+    "input_hashes_unchanged": true
+  },
+  "uploaded_real_episode": {
+    "source_sha256": "0652a3fb0e59e6860a8c5bdb5aedb08b729d192317776764fa729a6eedc905cf",
+    "input_hash_unchanged": true,
+    "exit_code": 2,
+    "episodes": 1,
+    "parent_groups": 1,
+    "splits": {
+      "train": {
+        "episodes": 1,
+        "parent_groups": 1
+      },
+      "val": {
+        "episodes": 0,
+        "parent_groups": 0
+      },
+      "test": {
+        "episodes": 0,
+        "parent_groups": 0
+      }
+    },
+    "leakage_check": {
+      "passed": true,
+      "overlap_counts": {
+        "train_val": {
+          "episode_ids": 0,
+          "lineage_tokens": 0,
+          "parent_groups": 0
+        },
+        "train_test": {
+          "episode_ids": 0,
+          "lineage_tokens": 0,
+          "parent_groups": 0
+        },
+        "val_test": {
+          "episode_ids": 0,
+          "lineage_tokens": 0,
+          "parent_groups": 0
+        }
+      }
+    },
+    "limitation": "Only one real uploaded episode is present locally; full-pool counts require the server run."
+  }
+}

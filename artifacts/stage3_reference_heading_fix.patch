@@ -1,0 +1,472 @@
+diff --git a/embodied/envs/scene_parameters.py b/embodied/envs/scene_parameters.py
+--- a/embodied/envs/scene_parameters.py
++++ b/embodied/envs/scene_parameters.py
+@@ -13,6 +13,7 @@
+ 
+ PARAMETERS = ('initial_gap','relative_speed','trigger_time','longitudinal_accel','target_offset','lane_change_duration')
+ BEHAVIORS = ('cut_in','keep_lane')
++REFERENCE_HEADINGS = ('ego', 'target')
+ 
+ 
+ @dataclass
+@@ -63,8 +64,11 @@
+     bounds: dict
+     limits: DynamicsLimits
+     behaviors: tuple = BEHAVIORS
++    reference_heading: str = 'ego'
+ 
+     def __post_init__(self):
++        if self.reference_heading not in REFERENCE_HEADINGS:
++            raise ValueError('reference_heading must be ego or target')
+         if set(self.bounds) != set(PARAMETERS): raise ValueError('Exactly six scene parameter bounds required')
+         for name,pair in self.bounds.items():
+             if len(pair)!=2 or not np.isfinite(pair).all() or pair[1]<=pair[0]:
+@@ -73,14 +77,17 @@
+             raise ValueError('Unknown behavior')
+ 
+     @classmethod
+-    def from_window(cls,window,target_index,limits):
++    def from_window(cls,window,target_index,limits,reference_heading='ego'):
++        if reference_heading not in REFERENCE_HEADINGS:
++            raise ValueError('reference_heading must be ego or target')
+         ego=center_states(window.history_ego[-1],window.metadata.get('position_reference'))
+         npc=center_states(window.history_npcs[-1,target_index],window.metadata.get('position_reference'))
+         if window.normalizer_id is not None or not np.isfinite(np.r_[ego,npc]).all():
+             raise ValueError('Finite physical anchor states required')
+         horizon=len(window.future_ego)*window.dt
+         if horizon < 3.5: raise ValueError('At least 3.5 seconds future required for this search baseline')
+-        heading=np.array([np.cos(ego[4]),np.sin(ego[4])])
++        yaw=npc[4] if reference_heading=='target' else ego[4]
++        heading=np.array([np.cos(yaw),np.sin(yaw)])
+         ego_speed=float(ego[2:4]@heading)
+         gap_min=.5*(ego[6]+npc[6])+1.
+         upper_speed=min(2.,limits.max_speed-ego_speed)
+@@ -90,7 +97,8 @@
+                     'trigger_time':(0.,min(1.5,horizon/4)),
+                     'longitudinal_accel':(-min(2.,limits.max_decel),min(1.,limits.max_accel)),
+                     'target_offset':(-.3,.3),
+-                    'lane_change_duration':(2.5,min(4.5,horizon-min(1.5,horizon/4)))},limits)
++                    'lane_change_duration':(2.5,min(4.5,horizon-min(1.5,horizon/4)))},limits,
++                    reference_heading=reference_heading)
+ 
+     def vector(self,parameters):
+         if set(parameters)!=set(PARAMETERS): raise ValueError('Wrong scene parameter names')
+@@ -125,6 +133,8 @@
+ 
+ class SceneGenerator:
+     def __init__(self,window,target_index,spec,acceleration_ramp=1.,validation_dt=.1):
++        if window.coordinate_frame != 'world':
++            raise ValueError('Scene generation requires world coordinates')
+         if not 0<=target_index<len(window.npc_ids): raise ValueError('Invalid target NPC index')
+         h=len(window.history_ego)
+         if not window.npc_mask[h-1:,target_index].all() or not window.ego_mask[h-1:].all():
+@@ -136,9 +146,11 @@
+         reference=window.metadata.get('position_reference')
+         self.ego=center_states(window.history_ego[-1],reference)
+         self.npc=center_states(window.history_npcs[-1,target_index],reference)
+-        yaw=self.ego[4]
++        yaw=self.npc[4] if spec.reference_heading=='target' else self.ego[4]
+         self.rotation=np.array([[np.cos(yaw),-np.sin(yaw)],[np.sin(yaw),np.cos(yaw)]])
+         self.origin=self.ego[:2].copy()
++        self.parameter_frame={'origin':self.origin.tolist(),'yaw_rad':float(yaw),
++                              'heading_source':spec.reference_heading,'coordinate_frame':'world'}
+         self.initial_lateral=float((self.npc[:2]-self.origin)@self.rotation[:,1])
+         self.lateral_speed=float(self.npc[2:4]@self.rotation[:,1])
+         self.ego_speed=float(self.ego[2:4]@self.rotation[:,0])
+@@ -205,6 +217,7 @@
+             setattr(context,name,center_states(getattr(context,name),reference))
+         context.metadata.update(position_reference='center',generated_target_history=True,
+                                 original_position_reference=reference,ego_response='fixed_observed_trajectory',
++                                parameter_frame=dict(self.parameter_frame),
+                                 generation_settings={'acceleration_ramp':self.ramp,'validation_dt':self.validation_dt})
+         context.history_npcs[:,self.target_index]=full[:h]
+         context.npc_mask[:h,self.target_index]=True
+diff --git a/embodied/envs/scene_search.py b/embodied/envs/scene_search.py
+--- a/embodied/envs/scene_search.py
++++ b/embodied/envs/scene_search.py
+@@ -72,6 +72,9 @@
+         quantized=np.rint(local/self.dedup_resolution).astype('<i8')
+         fingerprint=hashlib.sha256(quantized.tobytes()).hexdigest()
+         metrics={'max_speed':float(speed.max()),'max_abs_jerk':max_jerk,
++                 'min_longitudinal_accel':float(along.min()),
++                 'max_longitudinal_accel':float(along.max()),
++                 'min_forward_speed':float(forward.min()),
+                  'max_lateral_accel':float(lateral.max()),'max_yaw_rate':float(yaw_rate.max()),
+                  'road_checked':False,'road_check':'sampled_footprint_lane_envelope',
+                  'road_grid_spacing':self.road_grid_spacing,
+diff --git a/embodied/envs/run_scene_search.py b/embodied/envs/run_scene_search.py
+--- a/embodied/envs/run_scene_search.py
++++ b/embodied/envs/run_scene_search.py
+@@ -77,6 +77,7 @@
+         'risk':evaluation.risk_report,'constraints':evaluation.metrics,
+         'offline_constraints_passed':evaluation.valid,'simulation_verified':False,
+         'rssm_counterfactual_supported':False,'generated_target_history':True,
++        'parameter_frame':context.metadata['parameter_frame'],
+         'generation_settings':context.metadata['generation_settings'],
+         'execution_requirements':['Supply simulator map binding and initialization at anchor.',
+                                   'Provide a closed-loop ego controller and validate NPC execution.',
+@@ -110,7 +111,7 @@
+     if not 0<=args.window_index<len(windows): raise ValueError('--window-index outside available complete windows')
+     window=windows[args.window_index]; index=choose_target(window,args.target_id)
+     if not args.demo: road,limits,map_source=load_sumo_scene(args.sumo_cfg,window.npc_ids[index],profile)
+-    spec=SceneParameterSpec.from_window(window,index,limits)
++    spec=SceneParameterSpec.from_window(window,index,limits,args.reference_heading)
+     generator=SceneGenerator(window,index,spec,profile.get('acceleration_ramp',1.),profile.get('validation_dt',.1))
+     radius=spec.bounds['initial_gap'][1]+limits.max_speed*generator.horizon+10.
+     road=road.local(generator.origin,radius)
+@@ -131,6 +132,7 @@
+             payload=export_candidate(candidate,evaluation,args.seed,map_source,source)
+             payload['search_provenance']={'method':method.name,'profile':profile,
+                 'profile_sha256':file_sha256(profile_path),'parameter_bounds':spec.bounds,
++                'parameter_frame':generator.parameter_frame,
+                 'dynamics_limits':asdict(limits),'risk_config':asdict(evaluator.rules.config)}
+             name='top_%03d'%rank
+             (folder/(name+'.json')).write_text(_json(payload)+'\n',encoding='utf-8')
+@@ -147,6 +149,7 @@
+         'dt':window.dt,'horizon':generator.horizon,'history':args.history,'future':args.future,
+         'seed':args.seed,'budget_per_method':args.budget,'top_k_requested':args.top_k,
+         'parameter_bounds':spec.bounds,'behaviors':spec.behaviors,'dynamics_limits':asdict(limits),
++        'parameter_frame':generator.parameter_frame,
+         'profile':profile,'profile_sha256':file_sha256(profile_path),'risk_config':asdict(evaluator.rules.config),
+         'search_configuration':{m.name:vars(m) for m in methods},'searches':summaries,
+         'rssm_candidate_prediction':model_capability,'simulation_verified':False,
+@@ -173,6 +176,8 @@
+     parser.add_argument('--future',type=int,default=30)
+     parser.add_argument('--window-index',type=int,default=0)
+     parser.add_argument('--target-id')
++    parser.add_argument('--reference-heading',choices=('ego','target'),default='ego',
++                        help='Parameter axis: ego (legacy default) or target NPC anchor heading; not a curved route reference')
+     parser.add_argument('--budget',type=int,default=32)
+     parser.add_argument('--top-k',type=int,default=5)
+     parser.add_argument('--seed',type=int,default=0)
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -359,3 +359,5 @@
+ 
+ 真实 NPZ 需要显式传入对应 `--sumo-cfg`。候选采用固定实测自车响应进行离线评分，
+ 尚未在 SUMO/CARLA 验证执行；接口、真实数据结果和运行命令见 [阶段 3 使用说明](docs/long_tail_stage3.md)。
++合流道路上目标车与自车朝向差异较大时，可显式加 `--reference-heading target`；
++原 `ego` 参考方向仍为默认，物理/道路约束保持不变，详见 [真实样本修复与复验](docs/stage3_diagnosis/README.md)。
+diff --git a/docs/long_tail_stage3.md b/docs/long_tail_stage3.md
+--- a/docs/long_tail_stage3.md
++++ b/docs/long_tail_stage3.md
+@@ -32,12 +32,43 @@
+ 退出码：0 为两种方法均导出至少一个候选；2 为搜索完成，但至少一种方法没有可导出候选；
+ 1 为输入/配置错误或评估异常。真实样本本次返回 2：Random 无候选，CEM 有 3 个，报告完整保留。
+ 
++### 自车与目标车朝向不同时的参考方向
++
++`--reference-heading ego` 是原默认模式，参数轴沿自车 anchor 朝向。
++对合流道路上朝向与自车相差较大的 NPC，它会使 `keep_lane` 也产生人为的横向修正，
++从而大量触发加速度、yaw-rate 或离路检查。可以显式改用目标车 anchor 朝向：
++
++```bash
++python embodied/envs/run_scene_search.py \
++  --input "<实际episode.npz>" --sumo-cfg "<对应场景.sumocfg>" \
++  --reference-heading target --window-index 500 \
++  --budget 256 --seed 0 --top-k 5 --output stage3_runs/target_heading_w500
++```
++
++窗口编号按当前 NPZ 的原生时间轴选择，500 不是通用默认值。
++两个方法仍共享同一参数范围、参考方向、风险函数、物理阈值和预算，没有额外补采样。
++速度范围按选定轴上自车速度的投影重新构建；不是仅改变输出标签。
++`summary.json`、候选 JSON 和 NPZ 的 `metadata_json` 都保存 `parameter_frame`：
++世界坐标原点为自车 anchor 车身中心，`yaw_rad` 为参数轴角度，`heading_source` 为 `ego/target`。
++所有导出车辆轨迹仍是世界坐标、车身中心参考点。
++
++目标方向模式仍采用固定方向局部运动学，并不沿弯曲路网自动规划。
++`keep_lane` 的小偏移相对目标车的初始横向位置；`cut_in` 的终点偏移相对穿过自车 anchor、
++平行于选定参数轴的参考线。该参考线不是已确认的车道中心线，行为标签不是仿真验证结论。
++道路、动力学和 NPC-NPC 检查继续过滤无效轨迹。
++
++诊断指标新增 `min_longitudinal_accel`、`max_longitudinal_accel`、`min_forward_speed`。
++其中加速度极值为沿实际速度方向的切向加速度，可能不同于参数 `longitudinal_accel`。
++详细复现、验证结果和服务器复验命令见 [2026-10-26 修复说明](stage3_diagnosis/README.md)。
++
+ ## 参数和运动学
+ 
+ `SceneParameterSpec` 包括：initial_gap、relative_speed、trigger_time、longitudinal_accel、
+ target_offset、lane_change_duration；离散标签为 cut_in / keep_lane。
+-初始间距为 ego anchor 前方的车身中心纵向距离，相对速度沿该 anchor heading 定义。
+-target_offset 对 cut_in 表示 ego 参考线附近的终点横向偏移；对 keep_lane 表示原横向位置的小偏移。
++初始间距为自车 anchor 车身中心沿选定参数轴的纵向距离，相对速度也沿该轴定义；
++默认轴是自车朝向，`target` 模式为目标 NPC 朝向。
++target_offset 对 cut_in 表示通过自车 anchor 的选定参考线附近的终点横向偏移；
++对 keep_lane 表示原横向位置的小偏移。
+ 这是同向 merge/cut-in 的局部参数化，不是通用任意路网驾驶规划器。
+ 
+ 配置来源分开保存：
+diff --git a/tests/test_scene_reference_heading.py b/tests/test_scene_reference_heading.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_scene_reference_heading.py
+@@ -0,0 +1,145 @@
++"""Physical regressions for NPCs that approach on a different heading."""
++import copy
++import json
++import math
++from pathlib import Path
++import subprocess
++import sys
++import tempfile
++import unittest
++
++import numpy as np
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(ROOT / 'embodied/envs'))
++from test_scenario_risk import vehicle, window
++from scene_parameters import DynamicsLimits, SceneParameterSpec, SceneGenerator
++from scene_road import RoadEnvelope
++from scene_search import SceneEvaluator
++
++
++def angled_window():
++    # Ego moves east at 3 m/s; NPC moves at 3 m/s on a 60-degree heading.
++    w = window(vehicle(vx=3.), vehicle(x=15., y=3.5, vx=1.5,
++               vy=1.5*math.sqrt(3.), yaw=math.pi/3))
++    w.source_type = 'synthetic'
++    w.source_path = None
++    return w
++
++
++def steady_parameters():
++    # Ego projection on the target heading is 1.5 m/s; NPC initial speed is 2.
++    return dict(initial_gap=10., relative_speed=.5, trigger_time=.5,
++                longitudinal_accel=0., target_offset=0., lane_change_duration=4.)
++
++
++class ReferenceHeadingTest(unittest.TestCase):
++    def make_generator(self, w=None, heading='target'):
++        w = angled_window() if w is None else w
++        limits = DynamicsLimits(4., .2, 4.)
++        spec = SceneParameterSpec.from_window(w, 0, limits, reference_heading=heading)
++        return SceneGenerator(w, 0, spec)
++
++    def test_keep_lane_preserves_target_heading_instead_of_turning_toward_ego(self):
++        generator = self.make_generator()
++        candidate = generator.generate(steady_parameters(), 'keep_lane')
++        expected_velocity = np.tile([1., math.sqrt(3.)], (31, 1))
++        np.testing.assert_allclose(candidate.states[:, 2:4], expected_velocity, atol=1e-10)
++        np.testing.assert_allclose(candidate.states[:, 4], math.pi/3, atol=1e-10)
++        np.testing.assert_allclose(np.diff(candidate.states[:, :2], axis=0),
++                                   expected_velocity[:-1]*.2, atol=1e-10)
++        np.testing.assert_allclose(candidate.accelerations, 0., atol=1e-10)
++        evaluator = SceneEvaluator(generator.spec.limits, RoadEnvelope.rectangle([-100., -100., 100., 100.]))
++        result = evaluator.evaluate(candidate)
++        self.assertTrue(result.valid, result.failures)
++
++    def test_speed_bounds_and_generator_use_the_same_target_axis(self):
++        generator = self.make_generator()
++        low, high = generator.spec.bounds['relative_speed']
++        self.assertAlmostEqual(generator.ego_speed, 1.5)
++        self.assertAlmostEqual(low, -1.3)
++        self.assertAlmostEqual(high, 2.)
++        p = steady_parameters()
++        p['relative_speed'] = low
++        candidate = generator.generate(p, 'keep_lane')
++        np.testing.assert_allclose(np.linalg.norm(candidate.states[:, 2:4], axis=-1), .2, atol=1e-10)
++
++    def test_frame_selection_does_not_rewrite_observed_ego_or_source_npcs(self):
++        w = angled_window()
++        original = copy.deepcopy(w)
++        candidate = self.make_generator(w).generate(steady_parameters(), 'keep_lane')
++        for name in ('history_ego', 'future_ego', 'history_npcs', 'future_npcs', 'npc_mask'):
++            np.testing.assert_array_equal(getattr(w, name), getattr(original, name))
++        np.testing.assert_array_equal(candidate.context.history_ego, original.history_ego)
++        np.testing.assert_array_equal(candidate.context.future_ego, original.future_ego)
++        self.assertTrue(candidate.context.metadata['generated_target_history'])
++
++    def test_target_mode_is_invariant_to_a_rigid_world_rotation(self):
++        w = angled_window()
++        first = self.make_generator(w).generate(steady_parameters(), 'keep_lane')
++        transformed = copy.deepcopy(w)
++        angle = .7
++        rotation = np.array([[math.cos(angle), -math.sin(angle)], [math.sin(angle), math.cos(angle)]])
++        for name in ('history_ego', 'future_ego', 'history_npcs', 'future_npcs'):
++            states = getattr(transformed, name)
++            states[..., :2] = states[..., :2] @ rotation.T + [50., -20.]
++            states[..., 2:4] = states[..., 2:4] @ rotation.T
++            states[..., 4] += angle
++        second = self.make_generator(transformed).generate(steady_parameters(), 'keep_lane')
++        np.testing.assert_allclose(second.states[:, :2], first.states[:, :2] @ rotation.T + [50., -20.], atol=1e-10)
++        np.testing.assert_allclose(second.states[:, 2:4], first.states[:, 2:4] @ rotation.T, atol=1e-10)
++
++    def test_default_mode_preserves_explicit_legacy_ego_trajectories(self):
++        w = angled_window()
++        limits = DynamicsLimits(10., 2.6, 4.5)
++        default = SceneGenerator(w, 0, SceneParameterSpec.from_window(w, 0, limits))
++        explicit = SceneGenerator(w, 0, SceneParameterSpec.from_window(w, 0, limits, reference_heading='ego'))
++        p = steady_parameters()
++        first, second = default.generate(p, 'keep_lane'), explicit.generate(p, 'keep_lane')
++        np.testing.assert_array_equal(first.states, second.states)
++        self.assertEqual(first.candidate_id, second.candidate_id)
++
++    def test_unknown_heading_is_rejected(self):
++        with self.assertRaisesRegex(ValueError, 'reference_heading'):
++            self.make_generator(heading='nearest_road_guess')
++
++    def test_generator_rejects_nonworld_input_before_producing_world_provenance(self):
++        w = angled_window()
++        w.coordinate_frame = 'ego-centric'
++        with self.assertRaisesRegex(ValueError, 'world'):
++            self.make_generator(w)
++
++    def test_acceleration_failure_reports_actual_extrema(self):
++        from test_scene_generation import make_generator, parameters
++        generator, road = make_generator()
++        p = parameters()
++        p['longitudinal_accel'] = .5
++        candidate = generator.generate(p, 'keep_lane')
++        limits = DynamicsLimits(10., .2, 4.5)
++        result = SceneEvaluator(limits, road).evaluate(candidate)
++        self.assertIn('longitudinal_acceleration_limit', result.failures)
++        self.assertIn('max_longitudinal_accel', result.metrics)
++        self.assertAlmostEqual(result.metrics['max_longitudinal_accel'], .5)
++        self.assertAlmostEqual(result.metrics['min_longitudinal_accel'], 0.)
++
++    def test_cli_records_reference_frame_in_summary_and_exported_json_npz(self):
++        with tempfile.TemporaryDirectory() as directory:
++            output = Path(directory) / 'target_mode'
++            result = subprocess.run([sys.executable, str(ROOT/'embodied/envs/run_scene_search.py'),
++                '--demo', '--reference-heading', 'target', '--budget', '32', '--seed', '0',
++                '--top-k', '2', '--output', str(output)], cwd=str(ROOT), capture_output=True, text=True)
++            self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
++            summary = json.loads((output/'summary.json').read_text())
++            self.assertEqual(summary['parameter_frame']['heading_source'], 'target')
++            for method in ('random', 'cem'):
++                self.assertEqual(summary['searches'][method]['evaluations'], 32)
++                scene = json.loads((output/method/'top_001.json').read_text())
++                self.assertEqual(scene['parameter_frame']['heading_source'], 'target')
++                self.assertFalse(scene['simulation_verified'])
++                with np.load(output/method/'top_001.npz', allow_pickle=False) as archive:
++                    metadata = json.loads(str(archive['metadata_json'].item()))
++                    self.assertEqual(metadata['parameter_frame'], scene['parameter_frame'])
++
++
++if __name__ == '__main__':
++    unittest.main()
+diff --git a/docs/stage3_diagnosis/verify_reference_heading.py b/docs/stage3_diagnosis/verify_reference_heading.py
+new file mode 100644
+--- /dev/null
++++ b/docs/stage3_diagnosis/verify_reference_heading.py
+@@ -0,0 +1,118 @@
++"""Run the bounded real-data Stage 3 check with unchanged physical constraints."""
++import argparse
++import json
++from pathlib import Path
++import platform
++import subprocess
++import sys
++
++import numpy as np
++
++ROOT = Path(__file__).resolve().parents[2]
++sys.path.insert(0, str(ROOT / 'embodied/envs'))
++from rssm_inference import file_sha256
++
++
++def read_json(path):
++    return json.loads(path.read_text(encoding='utf-8'))
++
++
++def verify_exports(folder, summary, budget):
++    counts = {}
++    for method in ('random', 'cem'):
++        result = summary['searches'][method]
++        trials = [json.loads(line) for line in (folder/method/'trials.jsonl').read_text().splitlines()]
++        assert len(trials) == result['evaluations'] == budget, 'Unequal or incomplete search budget'
++        assert sum(int(t['valid']) for t in trials) == result['valid_count']
++        scenes = sorted((folder/method).glob('top_*.json'))
++        assert len(scenes) == len(result['top_candidate_ids'])
++        for rank, path in enumerate(scenes):
++            scene = read_json(path)
++            assert scene['candidate_id'] == result['top_candidate_ids'][rank]
++            assert scene['offline_constraints_passed'] and not scene['simulation_verified']
++            assert scene['parameter_frame']['heading_source'] == 'target'
++            assert scene['parameter_frame'] == summary['parameter_frame']
++            assert scene['risk']['prediction_source'] == 'fixed_ego_candidate_rule'
++            assert scene['risk']['score'] == result['top_risks'][rank]
++            with np.load(path.with_suffix('.npz'), allow_pickle=False) as arrays:
++                assert arrays['npc_ids'].tolist() == scene['npcs']['ids']
++                assert str(arrays['ego_id'].item()) == scene['ego']['id']
++                np.testing.assert_array_equal(arrays['states'], np.asarray(scene['target_trajectory']['states']))
++                np.testing.assert_array_equal(arrays['ego_state'], np.asarray(scene['ego']['states']))
++                np.testing.assert_allclose(arrays['npc_states'], np.asarray(scene['npcs']['states'], dtype=float), equal_nan=True)
++                np.testing.assert_array_equal(arrays['npc_valid_mask'], scene['npcs']['mask'])
++                target_index = scene['npcs']['ids'].index(scene['target_id'])
++                np.testing.assert_array_equal(arrays['states'], arrays['npc_states'][:, target_index])
++                metadata = json.loads(str(arrays['metadata_json'].item()))
++                assert metadata['parameter_frame'] == scene['parameter_frame']
++        counts[method] = result['valid_count']
++    return counts
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('--input', required=True)
++    parser.add_argument('--sumo-cfg', required=True)
++    parser.add_argument('--output', required=True)
++    parser.add_argument('--windows', type=int, nargs='+', default=[0, 100, 200, 300, 400, 500])
++    parser.add_argument('--budget', type=int, default=256)
++    parser.add_argument('--seed', type=int, default=0)
++    parser.add_argument('--repeat-window', type=int, default=500)
++    args = parser.parse_args()
++    output = Path(args.output).resolve()
++    if output.exists() and any(output.iterdir()):
++        raise ValueError('Use a new or empty output directory')
++    output.mkdir(parents=True, exist_ok=True)
++    original_hash = file_sha256(args.input)
++    windows = sorted(set(args.windows))
++    if args.repeat_window not in windows:
++        raise ValueError('--repeat-window must be included in --windows')
++    report = {'source': str(args.input), 'source_sha256': original_hash,
++              'reference_heading': 'target', 'seed': args.seed, 'budget_per_method': args.budget,
++              'environment': {'python': platform.python_version(), 'numpy': np.__version__},
++              'windows': [], 'simulation_verified': False}
++    summaries = {}
++    for window, repeat in [(i, False) for i in windows] + [(args.repeat_window, True)]:
++        folder = output/('w%d%s' % (window, '_repeat' if repeat else ''))
++        command = [sys.executable, '-u', str(ROOT/'embodied/envs/run_scene_search.py'),
++                   '--input', str(Path(args.input).resolve()), '--sumo-cfg', str(Path(args.sumo_cfg).resolve()),
++                   '--reference-heading', 'target', '--window-index', str(window),
++                   '--budget', str(args.budget), '--seed', str(args.seed), '--top-k', '5', '--output', str(folder)]
++        print('Starting window=%d repeat=%s' % (window, repeat), flush=True)
++        completed = subprocess.run(command)
++        if completed.returncode not in (0, 2):
++            raise RuntimeError('Search failed with exit code %d; inspect %s' % (completed.returncode, folder))
++        summary = read_json(folder/'summary.json')
++        counts = verify_exports(folder, summary, args.budget)
++        if repeat:
++            previous = summaries[window]
++            for method in ('random', 'cem'):
++                for key in ('valid_count', 'top_candidate_ids', 'top_risks', 'failure_counts'):
++                    assert summary['searches'][method][key] == previous['searches'][method][key], 'Same-seed result changed'
++                old = output/('w%d' % window)/method/'trials.jsonl'
++                new = folder/method/'trials.jsonl'
++                traces = []
++                for path in (old, new):
++                    trace = [json.loads(line) for line in path.read_text().splitlines()]
++                    traces.append([{k: v for k, v in row.items() if k != 'elapsed_seconds'} for row in trace])
++                assert traces[0] == traces[1], 'Same-seed trial parameters/objectives changed'
++            report['same_seed_repeat_verified'] = True
++        else:
++            summaries[window] = summary
++            risks = sum((s['top_risks'] for s in summary['searches'].values()), [])
++            report['windows'].append({'window': window, 'target_id': summary['target_id'],
++                                      'target_type': summary['source_map']['target_type'],
++                                      'valid_counts': counts, 'max_rule_risk': max(risks) if risks else None,
++                                      'exit_code': completed.returncode})
++    assert original_hash == file_sha256(args.input), 'Source NPZ changed'
++    report['source_unchanged'] = True
++    report['export_roundtrips_verified'] = True
++    report['all_requested_windows_have_candidates_for_both_methods'] = all(
++        min(w['valid_counts'].values()) > 0 for w in report['windows'])
++    (output/'verification.json').write_text(json.dumps(report, indent=2, allow_nan=False)+'\n', encoding='utf-8')
++    print(json.dumps(report, indent=2), flush=True)
++    return 0 if report['all_requested_windows_have_candidates_for_both_methods'] else 2
++
++
++if __name__ == '__main__':
++    sys.exit(main())

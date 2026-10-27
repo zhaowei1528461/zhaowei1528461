@@ -1,0 +1,49 @@
+{
+  "new_file_count": 13,
+  "file_sha256_lf": {
+    "embodied/envs/trajectory_maps.py": "bd482ebd291552cc132f0d2e26510e65c2f9c7755bacd5c7a07ad5accb003c55",
+    "embodied/envs/trajectory_dataset.py": "f0521c52acde5b4ce68e3449ae15924c936b96c5518c1f29b2be9833148b3f84",
+    "embodied/envs/trajectory_denoiser.py": "01e6e561a6403342e5401864b7c2bad537c360e2f94ea21c802c5afc7674b08a",
+    "embodied/envs/trajectory_diffusion.py": "29f2e197207c97375b8fc4845727b2c9009fb0ca7c021f8c32fdcfbfe5e9f1a2",
+    "embodied/envs/trajectory_metrics.py": "84a5254334b72707901de69f862da4fda94c04b69b815195c22334b5e25bdb80",
+    "embodied/envs/diffusion_candidate_adapter.py": "20cad2443fa74c145a649d4b664605e671f30892f0a60d715653fc92a5e8737a",
+    "embodied/envs/trajectory_training.py": "8af261ef34b6ebad3d8f647e521a19680325046b319e7c9dfd354e88b152778a",
+    "embodied/envs/train_trajectory_diffusion.py": "8500a97f13313981b460714d5e2a83c62e2722788e25e2c14991e8658ca2fe10",
+    "embodied/envs/sample_trajectories.py": "0ff54ecc88b5c1c5595eb8e20249f55d71f691173c754164eb971259d42586a5",
+    "tests/test_trajectory_dataset.py": "6ee81a147ff7734ee0abbb29efaecc788427f687c3bd88192846f1892112b49a",
+    "tests/test_trajectory_diffusion.py": "a8db610442af44fc393ccfdbc2fc399891d8851c6c8c4c86a9f7306bd9742dc3",
+    "tests/test_trajectory_training.py": "e0bf2f6e8a7b0b0e63b7c0b9d99e548100d9fc5c2672aaba7b435170402f10cc",
+    "docs/long_tail_stage4.md": "1c87a303a79dc84c086de48e7e14ee9ee4ac9e828b33c951cb1ec9b7809e2187"
+  },
+  "patch": "C:\\Users\\MEC\\Desktop\\dreamer_huifang_10_21\\artifacts\\stage4_direct_diffusion.patch",
+  "patch_sha256": "65902d7ddde6dd2a4e3754cda5f7acdebfa100e9cb8c1f586da9797fdbe4aa85",
+  "patch_bytes": 121818,
+  "zip": "C:\\Users\\MEC\\Desktop\\dreamer_huifang_10_21\\artifacts\\stage4_direct_diffusion.zip",
+  "zip_sha256": "d13404337cfaef3abff9e1c96fad208cb10daf1f585bfb562710f529f392b3ad",
+  "zip_bytes": 36562,
+  "dry_run_and_apply": [
+    {
+      "dry_run": true,
+      "returncode": 0,
+      "stdout": "checking file embodied/envs/trajectory_maps.py\nchecking file embodied/envs/trajectory_dataset.py\nchecking file embodied/envs/trajectory_denoiser.py\nchecking file embodied/envs/trajectory_diffusion.py\nchecking file embodied/envs/trajectory_metrics.py\nchecking file embodied/envs/diffusion_candidate_adapter.py\nchecking file embodied/envs/trajectory_training.py\nchecking file embodied/envs/train_trajectory_diffusion.py\nchecking file embodied/envs/sample_trajectories.py\nchecking file tests/test_trajectory_dataset.py\nchecking file tests/test_trajectory_diffusion.py\nchecking file tests/test_trajectory_training.py\nchecking file docs/long_tail_stage4.md\n",
+      "stderr": ""
+    },
+    {
+      "dry_run": false,
+      "returncode": 0,
+      "stdout": "patching file embodied/envs/trajectory_maps.py\npatching file embodied/envs/trajectory_dataset.py\npatching file embodied/envs/trajectory_denoiser.py\npatching file embodied/envs/trajectory_diffusion.py\npatching file embodied/envs/trajectory_metrics.py\npatching file embodied/envs/diffusion_candidate_adapter.py\npatching file embodied/envs/trajectory_training.py\npatching file embodied/envs/train_trajectory_diffusion.py\npatching file embodied/envs/sample_trajectories.py\npatching file tests/test_trajectory_dataset.py\npatching file tests/test_trajectory_diffusion.py\npatching file tests/test_trajectory_training.py\npatching file docs/long_tail_stage4.md\n",
+      "stderr": ""
+    }
+  ],
+  "all_applied_files_match": true,
+  "archive_crc_passed": true,
+  "original_and_reference_hashes_unchanged": true,
+  "full_suite": {
+    "tests": 182,
+    "seconds": 43.277,
+    "result": "OK",
+    "command": "python -m unittest discover -s tests"
+  },
+  "model_quality_passed": false,
+  "full_server_training_run": false
+}

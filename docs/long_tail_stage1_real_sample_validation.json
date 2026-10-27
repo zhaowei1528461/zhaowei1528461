@@ -1,0 +1,177 @@
+{
+  "input_file": "docs\\6c873565d1ba7e753c679303.npz",
+  "sha256": "4029e30a9ef159fc122c67d86d3383c3372d553317e90508e7e53f57448d2394",
+  "scope": "single_real_episode_format_validation",
+  "episode_id": "6c873565d1ba7e753c679303",
+  "scenario_id": "sumo:scenario_057_easy_veh011.sumocfg",
+  "parent_scenario_id": "sumo:scenario_057_easy_veh011.sumocfg",
+  "source_type": "sumo_original",
+  "terminal_reason": "goal",
+  "prediction_source": "sumo_execution",
+  "collection_complete": true,
+  "frames": 123,
+  "raw_frames": 124,
+  "npc_count": 11,
+  "time": {
+    "start": 0.2,
+    "end": 24.6,
+    "duration": 24.400000000000002,
+    "source_dt": 0.2,
+    "strictly_increasing": true,
+    "target_dt": 0.1
+  },
+  "vehicle_fields": [
+    "x",
+    "y",
+    "vx",
+    "vy",
+    "yaw",
+    "a",
+    "length",
+    "width"
+  ],
+  "coordinate_frame": "world",
+  "shapes": {
+    "ego_state": [
+      123,
+      8
+    ],
+    "npc_states": [
+      123,
+      11,
+      8
+    ],
+    "ego_actions": [
+      123,
+      1
+    ],
+    "raw_states": [
+      123,
+      31
+    ]
+  },
+  "checks": {
+    "npc_id_mask_agreement": true,
+    "missing_npc_values_nan": true,
+    "valid_vehicle_fields_finite": true,
+    "action_interval_alignment": true,
+    "unexecuted_terminal_action_excluded": true,
+    "world_to_ego_anchor": true,
+    "missing_frenet_explicit": true,
+    "standardized_arrays_equal_original": true,
+    "standardized_raw_frames_equal_original": true,
+    "original_file_hash_unchanged": true,
+    "window_provenance_inherited": true
+  },
+  "valid_rates": {
+    "ego": 1.0,
+    "npc": 0.7302291204730229,
+    "action": 0.991869918699187,
+    "raw_state": 1.0
+  },
+  "events": {
+    "collision": 0,
+    "near_miss": 17,
+    "low_ttc": 18,
+    "low_progress": 0
+  },
+  "event_config": {
+    "low_progress_duration": 5.0,
+    "low_progress_speed": 0.5,
+    "low_ttc": 2.0,
+    "near_miss_ttc": 0.5
+  },
+  "default_windows": 205,
+  "all_ego_valid_windows": 205,
+  "difficult_windows": 111,
+  "batch_shapes": {
+    "history_ego": [
+      2,
+      11,
+      8
+    ],
+    "future_ego": [
+      2,
+      30,
+      8
+    ],
+    "history_npcs": [
+      2,
+      11,
+      11,
+      8
+    ],
+    "future_npcs": [
+      2,
+      30,
+      11,
+      8
+    ],
+    "npc_mask": [
+      2,
+      41,
+      11
+    ],
+    "ego_mask": [
+      2,
+      41
+    ],
+    "ego_actions": [
+      2,
+      41,
+      1
+    ],
+    "ego_action_mask": [
+      2,
+      41
+    ],
+    "timestamps": [
+      2,
+      41
+    ]
+  },
+  "unverified": [
+    "physical_near_miss_ground_truth",
+    "multi_scenario_train_val_test_split",
+    "generated_copy_attack_replay_coverage",
+    "scenario_reproducibility"
+  ],
+  "missing_metadata": [
+    "map_id",
+    "seed",
+    "model_version",
+    "map_features"
+  ],
+  "format_result": "single_sample_passed",
+  "provenance_note": "x/y are known SUMO front-bumper positions; physical near-miss labels are not verified",
+  "ttc_observations": {
+    "zero_ttc_frames": 16,
+    "near_miss_threshold_frames": 17,
+    "low_ttc_threshold_frames": 18,
+    "collision_frames": 0,
+    "terminal_reason": "goal",
+    "max_cost": 0.0,
+    "legacy_distance_threshold_m": 4.36,
+    "zero_is_clamped_negative_result": true
+  },
+  "normalizer_smoke": {
+    "train": 1,
+    "val": 0,
+    "test": 0,
+    "training_vehicle_states": 1111,
+    "scalar_roundtrip_max_abs_error": 2.220446049250313e-16,
+    "yaw_direction_roundtrip_max_abs_error": 0.0
+  },
+  "standardized_output": "docs\\standardized_episode_pool\\6c873565d1ba7e753c679303.npz",
+  "standardized_metadata": {
+    "position_reference": "front_bumper_center",
+    "ttc_method": "legacy_longitudinal_gap_ttc",
+    "ttc_parameters": {
+      "d_safe": 4.36,
+      "lateral_gate": 2.0,
+      "negative_clipped": true
+    },
+    "ttc_limitations": "Only forward vehicles with closing longitudinal motion are considered; road geometry and future lateral motion are not constrained.",
+    "event_verification": "recorded_labels_only; physical_near_miss_not_verified"
+  }
+}

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SUMO configuration for ring scenario -->
+<configuration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+               xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/sumoConfiguration.xsd">
+
+    <input>
+        <!-- Replace with the actual network filename -->
+        <net-file value="hmxzw113.net.xml"/>
+        <route-files value="huandao.rou.xml"/>
+    </input>
+
+	<processing>
+		<lanechange.overtake-right value="true" />
+		<lanechange.duration value="2"/>
+        <ignore-route-errors value="true"/>
+        <time-to-teleport value="-1"/>  <!-- 禁用传送 -->
+        <collision.action value="none"/>  <!-- 碰撞时不采取行动 -->
+        <collision.check-junctions value="True"/>  <!-- 关闭路口碰撞检查 -->
+        <collision.mingap-factor value="0"/>  <!-- 最小间隙因子设为0 -->
+	</processing>
+    
+    <random_numberType>
+        <random value="true" />
+    </random_numberType>
+	<time>
+		<step-length value="0.2"/>
+		<begin value = "0"/>
+	</time>
+	<gui_only>
+        <start value="true" />
+    </gui_only>
+	<report>
+        <no-warnings value="true"/>
+        <no-step-log value="true"/>
+    </report>
+</configuration>

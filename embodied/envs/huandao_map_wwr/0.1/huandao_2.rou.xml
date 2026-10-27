@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+
+    <!-- Vehicle types -->
+    <vType id="egoType" accel="2.6" decel="4.5" sigma="0.5" length="4.36"  width="1.95"  maxSpeed="5.0 "
+           guiShape="passenger" color="1,0,0"/> <!-- 红色 -->
+    <vType id="npcType" accel="2.2" decel="4.5" sigma="0.6" length="4.36"  width="1.95" maxSpeed="3"
+           guiShape="passenger" color="0,0,1"/> <!-- 蓝色 -->
+    <vType id="SlowCar" accel="1.0" decel="1.0" length="4.36" maxSpeed="3.5" width="1.95"  minGap="2"
+           vClass="passenger" color="1,1,0" carFollowModel="Krauss"/>
+       <vType id="SlowCar1" accel="0.2" decel="1.0" length="4.36" maxSpeed="1.5" width="1.95"  minGap="2"
+           vClass="passenger" color="1,1,0" carFollowModel="Krauss"/>
+    <vType id="FastCar" accel="4.0" decel="5.0" length="4.36"   maxSpeed="5" minGap="2"
+           width="1.95" vClass="passenger" color="1,1,0"/>
+    <vType id="Auto" accel="3.0" decel="5.0" length="4.36"   maxSpeed="3.5" minGap="2"
+           width="1.95" vClass="passenger" color="0,1,0"/>
+
+    <!-- Routes -->
+    <!-- 往南进往东出 -->
+    <route id="huan1route" edges="-162 -163 -104 -107"/>
+    <!-- 从南进往北出 -->
+    <route id="huan2route" edges="-162 -163 -104 -98 -96"/>
+
+    <!-- 从南进从西出 -->
+    <route id="huan3route" edges="-162 -163 -104 -98 -100 -191"/>
+    <!-- 从北进从南出 -->
+
+    <!-- 从东进往北出 -->
+    <route id="huan4route" edges="108#0 107 -98 -96"/>
+    <!-- 从东进从西出 -->
+    <route id="huan5route" edges="108#0 107 -98 -100 -191"/>
+    <!-- 从北进从西出 -->
+    <route id="huan6route" edges="96 -100 -191 -193#0"/>
+    <!-- 西进从东出 -->
+    <route id="huan7route" edges=" -180#1 -179 -102 -104 -107"/>
+    <!-- 从西进从北出 -->
+    <route id="huan8route" edges="-162 -163 -104 -98 -96"/>
+
+     <route id="huan9route" edges="-163 -104 -107"/>
+
+     <route id="huan10route" edges="108#0 107 -98 -100 -102 163 162"/>
+
+     <route id="huan11route" edges=" -163 -104 -107"/>
+
+     <route id="huan12route" edges=" -100 -102 -104 -98"/>
+
+    <route id="autoroute" edges="-162 -163 -104 -98 -100 -191"/>
+
+    <route id="huan13route" edges="107 -98 -100 -102 -104 -107"/>
+<!-- 从北进从南出 -->       
+       <route id="huan14route" edges="96 -100  -102 163 "/>
+
+<!-- 从西进从东出 -->       
+<route id="huan15route" edges="-179 -102  -104 -107 "/>
+
+
+    <!-- NPC route -->
+    <route id="r_npc" edges="-179 -102 -104 -107"/>
+    <route id="huan_route" edges="-102 -104 -98 -100"/>
+    <route id="huan_route1" edges="-104 -98 -100 -102 163"/>
+    <route id="huan_route2" edges="-98 -100 -102 -104"/>
+    <!-- Ego vehicle: 禁用变道 lcMode="0" -->
+<vehicle id="Auto" type="egoType" route="huan13route"
+         depart="0" departLane="1" departPos="random" departSpeed="3" />
+<vehicle id="obs_3" type="SlowCar1" route="huan12route"
+         depart="0" departLane="1" departPos="random" departSpeed="2" />
+<vehicle id="obs_2" type="SlowCar1" route="huan_route"
+         depart="0" departLane="1" departPos="random" departSpeed="1" />
+<vehicle id="obs_1" type="SlowCar1" route="huan11route"
+         depart="0" departLane="0" departPos="random" departSpeed="0" />
+<flow id="npc_huan" type="npcType" route="huan_route"
+         begin="0" end="600" departPos="random" vehsPerHour="400"
+         departLane="best" departSpeed="3" /> 
+<flow id="npc_huan1" type="npcType" route="huan_route1"
+         begin="0" end="600" departPos="random" vehsPerHour="400"
+         departLane="best" departSpeed="2" /> 
+<flow id="bei_nan" type="npcType" route="huan14route"
+         begin="0" end="600" departPos="random" vehsPerHour="400"
+         departLane="best" departSpeed="3" />
+<flow id="zuai" type="npcType" route="autoroute"
+         begin="0" end="600" departPos="random" vehsPerHour="400"
+         departLane="1" departSpeed="3" />
+</routes>

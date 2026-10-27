@@ -1,0 +1,609 @@
+diff --git a/embodied/envs/scenario_data.py b/embodied/envs/scenario_data.py
+--- a/embodied/envs/scenario_data.py
++++ b/embodied/envs/scenario_data.py
+@@ -585,10 +585,8 @@
+     return windows
+ 
+ 
+-def split_episodes(episodes, ratios=(0.8, 0.1, 0.1), seed=0, group_by="scenario"):
+-    """Group whole scenario ancestry components, never split perturbed copies."""
+-    if len(ratios) != 3 or any(not np.isfinite(_number(r)) or r < 0 for r in ratios) or not np.isclose(sum(ratios), 1):
+-        raise ValueError("train/val/test ratios must be nonnegative and sum to one")
++def group_episodes(episodes, group_by="scenario"):
++    """Return whole ancestry components; accepts lightweight identity indexes too."""
+     if group_by not in ("scenario", "map"):
+         raise ValueError("group_by must be scenario or map")
+     parents = {}
+@@ -612,6 +610,14 @@
+     grouped = {}
+     for episode in episodes:
+         grouped.setdefault(find("scenario:" + episode.scenario_id), []).append(episode)
++    return grouped
++
++
++def split_episodes(episodes, ratios=(0.8, 0.1, 0.1), seed=0, group_by="scenario"):
++    """Group whole scenario ancestry components, never split perturbed copies."""
++    if len(ratios) != 3 or any(not np.isfinite(_number(r)) or r < 0 for r in ratios) or not np.isclose(sum(ratios), 1):
++        raise ValueError("train/val/test ratios must be nonnegative and sum to one")
++    grouped = group_episodes(episodes, group_by=group_by)
+     keys = sorted(grouped)
+     np.random.RandomState(seed).shuffle(keys)
+     desired = np.asarray(ratios) * len(keys)
+diff --git a/embodied/envs/prepare_scenario_splits.py b/embodied/envs/prepare_scenario_splits.py
+new file mode 100644
+--- /dev/null
++++ b/embodied/envs/prepare_scenario_splits.py
+@@ -0,0 +1,252 @@
++"""Index recorded SUMO episodes one at a time and freeze ancestry-safe splits.
++
++No windows, training tensors or normalizer are created. Full trajectories and
++raw frames are released after each canonical episode has been inspected.
++"""
++from __future__ import annotations
++
++import argparse
++from collections import Counter
++from dataclasses import asdict, dataclass
++import hashlib
++import json
++from pathlib import Path
++import sys
++from typing import Optional
++import zipfile
++import zlib
++
++import numpy as np
++
++try:
++    from .scenario_data import SCHEMA_VERSION, group_episodes, load_episode, split_episodes
++except ImportError:
++    from scenario_data import SCHEMA_VERSION, group_episodes, load_episode, split_episodes
++
++
++RECORDED_SOURCE_TYPES = {'sumo_original', 'sumo_copy', 'sumo_attack', 'sumo_replay'}
++
++
++class ExcludedEpisode(ValueError):
++    pass
++
++
++@dataclass
++class EpisodeIndex:
++    episode_id: str
++    scenario_id: str
++    parent_scenario_id: Optional[str]
++    map_id: Optional[str]
++    input_source: str
++    relative_path: str
++    input_sha256: str
++    source_type: str
++    prediction_source: Optional[str]
++    source_cfg: Optional[str]
++    coordinate_frame: str
++    frame_count: int
++    npc_count: int
++    dt: Optional[float]
++    collection_complete: Optional[bool]
++
++
++def _sha256(path):
++    result = hashlib.sha256()
++    with Path(path).open('rb') as stream:
++        for block in iter(lambda: stream.read(1024*1024), b''):
++            result.update(block)
++    return result.hexdigest()
++
++
++def _read_index(path, input_root):
++    before = path.stat()
++    # Stage 3 candidate NPZs deliberately have a different contract. Identify
++    # them before the canonical loader reports missing recorded-episode arrays.
++    with np.load(path, allow_pickle=False) as archive:
++        if 'metadata_json' in archive.files:
++            header = json.loads(str(archive['metadata_json'].item()))
++            if not isinstance(header, dict):
++                raise ValueError('metadata_json must contain a JSON object')
++            if header.get('metadata') is not None and not isinstance(header['metadata'], dict):
++                raise ValueError('Episode metadata must be a JSON object or null')
++            if 'raw_frames_json' not in archive.files and header.get('format') == 'long_tail_candidate_scene':
++                raise ExcludedEpisode('Generated Stage 3 candidate, not a recorded episode')
++    episode = load_episode(path)
++    if episode.source_type not in RECORDED_SOURCE_TYPES:
++        raise ExcludedEpisode('Not a recorded SUMO source_type: %s' % episode.source_type)
++    prediction_source = episode.metadata.get('prediction_source')
++    if prediction_source not in (None, 'sumo_execution'):
++        raise ExcludedEpisode('Non-execution prediction_source: %s' % prediction_source)
++    for name in ('episode_id', 'scenario_id'):
++        value = getattr(episode, name)
++        if not isinstance(value, str) or not value.strip():
++            raise ValueError('Nonempty string %s required' % name)
++    for name in ('parent_scenario_id', 'map_id'):
++        value = getattr(episode, name)
++        if value is not None and not isinstance(value, str):
++            raise ValueError('%s must be a string or None' % name)
++    if len(episode.timestamps) < 2:
++        raise ValueError('Recorded episode needs at least two timestamps')
++    if episode.dt is not None:
++        if not np.isfinite(episode.dt) or episode.dt <= 0:
++            raise ValueError('Invalid native episode dt')
++        if not np.allclose(np.diff(episode.timestamps), episode.dt, rtol=1e-6, atol=1e-7):
++            raise ValueError('Recorded dt contradicts the native timestamp intervals')
++    index = EpisodeIndex(
++        episode.episode_id, episode.scenario_id, episode.parent_scenario_id,
++        episode.map_id, str(path), path.relative_to(input_root).as_posix(), _sha256(path),
++        episode.source_type, prediction_source, episode.source_cfg, episode.coordinate_frame,
++        len(episode.timestamps), len(episode.npc_ids), episode.dt,
++        episode.metadata.get('collection_complete'))
++    after = path.stat()
++    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
++        raise ValueError('Input file changed while scanning; use a stable pool snapshot')
++    return index
++
++
++def scan_pool(input_path, progress=None):
++    source = Path(input_path).resolve()
++    if not source.exists():
++        raise FileNotFoundError('Episode input does not exist: ' + str(source))
++    input_root = source if source.is_dir() else source.parent
++    paths = sorted(p for p in source.rglob('*.npz') if p.is_file()) if source.is_dir() else [source]
++    if not paths or any(p.suffix.lower() != '.npz' for p in paths):
++        raise ValueError('Expected recorded episode NPZ files')
++    issues = {'input_root': str(input_root), 'discovered_file_count': len(paths),
++              'rejected_files': [], 'excluded_files': [], 'duplicate_files': []}
++    indexes, conflicts = {}, set()
++    if progress:
++        progress(0, len(paths), '', 'start')
++    for number, path in enumerate(paths, 1):
++        status = 'accepted'
++        try:
++            index = _read_index(path, input_root)
++            if index.episode_id in conflicts:
++                raise ValueError('Conflicting episode_id: ' + index.episode_id)
++            previous = indexes.get(index.episode_id)
++            if previous is not None:
++                if previous.input_sha256 == index.input_sha256:
++                    issues['duplicate_files'].append({'source': str(path), 'episode_id': index.episode_id,
++                                                     'canonical_source': previous.input_source})
++                    status = 'duplicate'
++                else:
++                    del indexes[index.episode_id]
++                    conflicts.add(index.episode_id)
++                    issues['rejected_files'].append({'source': previous.input_source,
++                                                     'error': 'Conflicting episode_id: '+index.episode_id})
++                    raise ValueError('Conflicting episode_id: ' + index.episode_id)
++            else:
++                indexes[index.episode_id] = index
++        except ExcludedEpisode as error:
++            issues['excluded_files'].append({'source': str(path), 'reason': str(error)})
++            status = 'excluded'
++        except (ValueError, TypeError, KeyError, OSError, EOFError, zipfile.BadZipFile, zlib.error) as error:
++            issues['rejected_files'].append({'source': str(path), 'error': str(error)})
++            status = 'rejected'
++        if progress:
++            progress(number, len(paths), str(path), status)
++    return sorted(indexes.values(), key=lambda i: i.episode_id), issues
++
++
++def _audit(splits, group_ids):
++    identities, tokens, groups = {}, {}, {}
++    for name, rows in splits.items():
++        identities[name] = {e.episode_id for e in rows}
++        tokens[name] = {value for e in rows for value in (e.scenario_id, e.parent_scenario_id) if value}
++        groups[name] = {group_ids[e.episode_id] for e in rows}
++    overlap = {}
++    names = list(splits)
++    for i, left in enumerate(names):
++        for right in names[i+1:]:
++            overlap[left+'_'+right] = {
++                'episode_ids': len(identities[left] & identities[right]),
++                'lineage_tokens': len(tokens[left] & tokens[right]),
++                'parent_groups': len(groups[left] & groups[right])}
++    passed = all(not any(counts.values()) for counts in overlap.values())
++    if not passed:
++        raise ValueError('Cross-split episode or ancestry overlap detected')
++    return {'passed': passed, 'overlap_counts': overlap}
++
++
++def prepare_pool(input_path, output, ratios=(.8, .1, .1), seed=0, progress=None):
++    # Reuse legacy validation and deterministic allocation, including small pools.
++    split_episodes([], ratios=ratios, seed=seed)
++    output = Path(output).resolve()
++    if output.exists() and (not output.is_dir() or any(output.iterdir())):
++        raise ValueError('Output directory must be new or empty; preserve frozen splits')
++    indexes, issues = scan_pool(input_path, progress=progress)
++    groups = group_episodes(indexes)
++    group_ids = {episode.episode_id: key for key, rows in groups.items() for episode in rows}
++    splits = split_episodes(indexes, ratios=ratios, seed=seed)
++    audit = _audit(splits, group_ids)
++    split_counts = {name: {'episodes': len(rows),
++                          'parent_groups': len({group_ids[e.episode_id] for e in rows})}
++                    for name, rows in splits.items()}
++    nonempty = all(not ratio or split_counts[name]['episodes'] > 0
++                   for name, ratio in zip(('train', 'val', 'test'), ratios))
++    exit_code = 1 if issues['rejected_files'] or not indexes else (0 if nonempty else 2)
++    manifest = {'artifact_type': 'scenario_split_manifest', 'schema_version': SCHEMA_VERSION,
++                'seed': seed, 'ratios': list(ratios), 'group_by': 'scenario',
++                'input_root': issues['input_root'], 'normalizer_id': None, 'normalizer_path': None,
++                'leakage_check': audit, 'all_requested_splits_nonempty': nonempty,
++                'preparation_exit_code': exit_code,
++                'splits': {name: [{**asdict(e), 'parent_group_id': group_ids[e.episode_id]} for e in rows]
++                           for name, rows in splits.items()}}
++    output.mkdir(parents=True, exist_ok=True)
++    manifest_path, index_path, report_path = (output/name for name in
++                                            ('split_manifest.json', 'episode_index.jsonl', 'dataset_report.json'))
++    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, allow_nan=False)+'\n', encoding='utf-8')
++    destinations = {e.episode_id: name for name, rows in splits.items() for e in rows}
++    with index_path.open('w', encoding='utf-8', newline='\n') as stream:
++        for e in indexes:
++            row = {**asdict(e), 'parent_group_id': group_ids[e.episode_id], 'split': destinations[e.episode_id]}
++            stream.write(json.dumps(row, ensure_ascii=False, sort_keys=True, allow_nan=False)+'\n')
++    completeness = Counter('true' if e.collection_complete is True else
++                           'false' if e.collection_complete is False else 'unknown' for e in indexes)
++    report = {'artifact_type': 'recorded_pool_split_report', 'schema_version': SCHEMA_VERSION,
++              'exit_code': exit_code, 'seed': seed, 'ratios': list(ratios),
++              'recorded_episode_count': len(indexes), 'independent_parent_group_count': len(groups),
++              'distinct_scenario_id_count': len({e.scenario_id for e in indexes}),
++              'declared_parent_id_count': len({e.parent_scenario_id for e in indexes if e.parent_scenario_id}),
++              'source_type_counts': dict(Counter(e.source_type for e in indexes)),
++              'collection_completeness_counts': dict(completeness),
++              'native_dt_values': sorted({e.dt for e in indexes if e.dt is not None}),
++              'nonuniform_episode_count': sum(e.dt is None for e in indexes),
++              'source_type_only_provenance_count': sum(e.prediction_source is None for e in indexes),
++              'zero_npc_episode_count': sum(e.npc_count == 0 for e in indexes),
++              'splits': split_counts, 'leakage_check': audit,
++              'all_requested_splits_nonempty': nonempty, 'windows_materialized': False,
++              'window_validity_checked': False, 'normalizer_fitted': False,
++              'validation_level': 'canonical NPZ schema, array shapes and timestamps; no per-window eligibility checks',
++              'snapshot_rule': 'Only NPZ paths discovered at scan start are included; source file hashes are recorded.',
++              'manifest_path': str(manifest_path), 'index_path': str(index_path), 'report_path': str(report_path),
++              'rejected_file_count': len(issues['rejected_files']), 'excluded_file_count': len(issues['excluded_files']),
++              'duplicate_file_count': len(issues['duplicate_files']), **issues}
++    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False)+'\n', encoding='utf-8')
++    return report
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('--input', required=True, help='Recorded NPZ pool or one canonical episode NPZ')
++    parser.add_argument('--output', required=True, help='New directory for frozen index/manifest/report')
++    parser.add_argument('--ratios', nargs=3, type=float, default=(.8, .1, .1))
++    parser.add_argument('--split-seed', type=int, default=0)
++    parser.add_argument('--progress-every', type=int, default=25)
++    args = parser.parse_args(argv)
++    if args.progress_every < 1:
++        parser.error('--progress-every must be positive')
++    def progress(number, total, path, status):
++        if number in (0, 1, total) or number % args.progress_every == 0 or status in ('rejected', 'excluded'):
++            print('[scan %d/%d] %s %s' % (number, total, status, Path(path).name if path else ''),
++                  file=sys.stderr, flush=True)
++    try:
++        report = prepare_pool(args.input, args.output, ratios=tuple(args.ratios), seed=args.split_seed, progress=progress)
++    except (ValueError, TypeError, KeyError, OSError, zipfile.BadZipFile) as error:
++        report = {'exit_code': 1, 'error': str(error)}
++    print(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False), flush=True)
++    return report['exit_code']
++
++
++if __name__ == '__main__':
++    sys.exit(main())
+diff --git a/tests/test_scenario_splits.py b/tests/test_scenario_splits.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_scenario_splits.py
+@@ -0,0 +1,229 @@
++"""Recorded-pool indexing, bounded loading and ancestry-safe split regressions."""
++import hashlib
++import importlib
++import json
++from pathlib import Path
++import shutil
++import subprocess
++import sys
++import tempfile
++from types import SimpleNamespace
++import unittest
++from unittest import mock
++import weakref
++import zipfile
++
++import numpy as np
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(ROOT/'embodied/envs'))
++import scenario_data as data
++from test_scenario_data import record
++
++try:
++    splits = importlib.import_module('prepare_scenario_splits')
++except ImportError:
++    splits = None
++
++
++def write_record(directory, episode_id, scenario_id, parent=None, source_type='sumo_original', complete=True):
++    item = record(episode_id=episode_id, scenario_id=scenario_id, parent=parent)
++    item['source_type'] = source_type
++    item['metadata'] = {'prediction_source': 'sumo_execution' if source_type.startswith('sumo_') else 'synthetic_kinematics',
++                        'collection_complete': complete}
++    return data.write_episode(data.episode_from_record(item), directory)
++
++
++def fixture_pool(directory, count=8):
++    for i in range(count):
++        write_record(directory, 'base-%d' % i, 's%d' % i)
++        write_record(directory, 'copy-%d' % i, 'c%d' % i, parent='s%d' % i, source_type='sumo_copy')
++
++
++class ScenarioSplitTest(unittest.TestCase):
++    def setUp(self):
++        self.assertIsNotNone(splits, 'Streaming pool split tool is missing')
++
++    def test_group_helper_merges_transitive_ancestry_and_absent_parents(self):
++        self.assertTrue(hasattr(data, 'group_episodes'), 'Shared ancestry group helper is missing')
++        entries = [SimpleNamespace(episode_id='one', scenario_id='child', parent_scenario_id='absent', map_id=None),
++                   SimpleNamespace(episode_id='two', scenario_id='grand', parent_scenario_id='child', map_id=None),
++                   SimpleNamespace(episode_id='three', scenario_id='other', parent_scenario_id=None, map_id=None)]
++        groups = data.group_episodes(entries)
++        self.assertEqual({frozenset(e.episode_id for e in g) for g in groups.values()},
++                         {frozenset({'one', 'two'}), frozenset({'three'})})
++
++    def test_inventory_counts_groups_and_persists_nonleaking_splits(self):
++        with tempfile.TemporaryDirectory() as directory:
++            pool, output = Path(directory)/'pool', Path(directory)/'prepared'
++            fixture_pool(pool)
++            hashes = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in pool.glob('*.npz')}
++            report = splits.prepare_pool(pool, output)
++            self.assertEqual(report['exit_code'], 0)
++            self.assertEqual(report['recorded_episode_count'], 16)
++            self.assertEqual(report['independent_parent_group_count'], 8)
++            self.assertEqual({k: v['episodes'] for k, v in report['splits'].items()}, {'train': 12, 'val': 2, 'test': 2})
++            manifest = json.loads((output/'split_manifest.json').read_text())
++            destinations = {row['episode_id']: name for name, rows in manifest['splits'].items() for row in rows}
++            for i in range(8):
++                self.assertEqual(destinations['base-%d' % i], destinations['copy-%d' % i])
++            # Fixed-seed compatibility with the old splitter, including its stable ordering.
++            self.assertEqual({k for k, v in destinations.items() if v == 'val'}, {'base-5', 'copy-5'})
++            self.assertEqual({k for k, v in destinations.items() if v == 'test'}, {'base-4', 'copy-4'})
++            self.assertTrue(report['leakage_check']['passed'])
++            self.assertTrue(report['all_requested_splits_nonempty'])
++            self.assertFalse(report['windows_materialized'])
++            self.assertFalse((output/'normalizer.json').exists())
++            self.assertEqual(len((output/'episode_index.jsonl').read_text().splitlines()), 16)
++            self.assertEqual(hashes, {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in pool.glob('*.npz')})
++
++    def test_previous_episode_is_released_before_the_next_load(self):
++        with tempfile.TemporaryDirectory() as directory:
++            fixture_pool(Path(directory)/'pool', count=3)
++            refs = []
++            original = splits.load_episode
++            def tracked_load(path):
++                if refs:
++                    self.assertIsNone(refs[-1](), 'Previous full episode is retained in memory')
++                episode = original(path)
++                refs.append(weakref.ref(episode))
++                return episode
++            with mock.patch.object(splits, 'load_episode', side_effect=tracked_load):
++                report = splits.prepare_pool(Path(directory)/'pool', Path(directory)/'out', ratios=(1., 0., 0.))
++            self.assertEqual(report['recorded_episode_count'], 6)
++            self.assertIsNone(refs[-1]())
++
++    def test_identical_duplicate_files_count_once(self):
++        with tempfile.TemporaryDirectory() as directory:
++            pool = Path(directory)/'pool'
++            fixture_pool(pool)
++            (pool/'copies').mkdir()
++            shutil.copyfile(pool/'base-0.npz', pool/'copies'/'duplicate.npz')
++            report = splits.prepare_pool(pool, Path(directory)/'out')
++            self.assertEqual(report['recorded_episode_count'], 16)
++            self.assertEqual(report['duplicate_file_count'], 1)
++            self.assertEqual(report['rejected_file_count'], 0)
++
++    def test_conflicting_episode_id_excludes_both_versions(self):
++        with tempfile.TemporaryDirectory() as directory:
++            pool = Path(directory)/'pool'
++            fixture_pool(pool)
++            altered = data.episode_from_record(record(episode_id='base-0', scenario_id='different'))
++            data.write_episode(altered, pool/'conflicting')
++            report = splits.prepare_pool(pool, Path(directory)/'out')
++            self.assertEqual(report['exit_code'], 1)
++            self.assertEqual(report['recorded_episode_count'], 15)
++            self.assertEqual(report['rejected_file_count'], 2)
++            manifest = json.loads((Path(directory)/'out/split_manifest.json').read_text())
++            self.assertNotIn('base-0', [r['episode_id'] for rows in manifest['splits'].values() for r in rows])
++
++    def test_synthetic_and_generated_candidates_are_excluded_from_real_counts(self):
++        with tempfile.TemporaryDirectory() as directory:
++            pool = Path(directory)/'pool'
++            write_record(pool, 'real', 'real')
++            write_record(pool, 'synthetic', 'synthetic', source_type='synthetic')
++            np.savez_compressed(pool/'candidate.npz', metadata_json=np.asarray(json.dumps({
++                'schema_version': 1, 'format': 'long_tail_candidate_scene', 'simulation_verified': False})))
++            report = splits.prepare_pool(pool, Path(directory)/'out', ratios=(1., 0., 0.))
++            self.assertEqual(report['exit_code'], 0)
++            self.assertEqual(report['recorded_episode_count'], 1)
++            self.assertEqual(report['excluded_file_count'], 2)
++
++    def test_corrupt_file_is_reported_and_prevents_success_status(self):
++        with tempfile.TemporaryDirectory() as directory:
++            pool = Path(directory)/'pool'
++            write_record(pool, 'real', 'real')
++            (pool/'broken.npz').write_bytes(b'not a zip archive')
++            report = splits.prepare_pool(pool, Path(directory)/'out', ratios=(1., 0., 0.))
++            self.assertEqual(report['exit_code'], 1)
++            self.assertEqual(report['recorded_episode_count'], 1)
++            self.assertEqual(report['rejected_file_count'], 1)
++
++    def test_nonobject_metadata_is_rejected_without_aborting_the_pool(self):
++        for canonical, nested in ((False, False), (True, False), (True, True)):
++            with self.subTest(canonical=canonical, nested=nested), tempfile.TemporaryDirectory() as directory:
++                pool, output = Path(directory)/'pool', Path(directory)/'out'
++                write_record(pool, 'real', 'real')
++                arrays = {}
++                if canonical:
++                    with np.load(pool/'real.npz', allow_pickle=False) as archive:
++                        arrays = {name: archive[name] for name in archive.files}
++                header = json.loads(str(arrays['metadata_json'].item())) if nested else []
++                if nested:
++                    header['metadata'] = []
++                arrays['metadata_json'] = np.asarray(json.dumps(header))
++                np.savez_compressed(pool/'malformed.npz', **arrays)
++                report = splits.prepare_pool(pool, output, ratios=(1., 0., 0.))
++                self.assertEqual(report['exit_code'], 1)
++                self.assertEqual(report['recorded_episode_count'], 1)
++                self.assertEqual(report['rejected_file_count'], 1)
++                self.assertTrue((output/'dataset_report.json').is_file())
++
++    def test_damaged_deflate_member_is_reported_without_aborting_the_pool(self):
++        with tempfile.TemporaryDirectory() as directory:
++            pool, output = Path(directory)/'pool', Path(directory)/'out'
++            write_record(pool, 'real', 'real')
++            target = pool/'damaged.npz'
++            shutil.copyfile(pool/'real.npz', target)
++            payload = bytearray(target.read_bytes())
++            with zipfile.ZipFile(target) as archive:
++                member = archive.getinfo('metadata_json.npy')
++                self.assertEqual(member.compress_type, zipfile.ZIP_DEFLATED)
++            offset = member.header_offset
++            start = offset + 30 + int.from_bytes(payload[offset+26:offset+28], 'little') + int.from_bytes(payload[offset+28:offset+30], 'little')
++            payload[start] = (payload[start] & ~7) | 6  # Reserved DEFLATE block type.
++            target.write_bytes(payload)
++            report = splits.prepare_pool(pool, output, ratios=(1., 0., 0.))
++            self.assertEqual(report['exit_code'], 1)
++            self.assertEqual(report['recorded_episode_count'], 1)
++            self.assertEqual(report['rejected_file_count'], 1)
++            self.assertTrue((output/'dataset_report.json').is_file())
++
++    def test_few_parent_groups_report_empty_splits_instead_of_splitting_copies(self):
++        with tempfile.TemporaryDirectory() as directory:
++            pool = Path(directory)/'pool'
++            fixture_pool(pool, count=1)
++            report = splits.prepare_pool(pool, Path(directory)/'out')
++            self.assertEqual(report['exit_code'], 2)
++            self.assertEqual(report['independent_parent_group_count'], 1)
++            self.assertEqual({k: v['episodes'] for k, v in report['splits'].items()}, {'train': 2, 'val': 0, 'test': 0})
++            self.assertFalse(report['all_requested_splits_nonempty'])
++            self.assertTrue(report['leakage_check']['passed'])
++
++    def test_recorded_incomplete_prefix_is_counted_with_completeness_flag(self):
++        with tempfile.TemporaryDirectory() as directory:
++            pool = Path(directory)/'pool'
++            write_record(pool, 'prefix', 'source', complete=False)
++            report = splits.prepare_pool(pool, Path(directory)/'out', ratios=(1., 0., 0.))
++            self.assertEqual(report['recorded_episode_count'], 1)
++            self.assertEqual(report['collection_completeness_counts']['false'], 1)
++            row = json.loads((Path(directory)/'out/episode_index.jsonl').read_text().splitlines()[0])
++            self.assertFalse(row['collection_complete'])
++
++    def test_existing_output_is_not_overwritten(self):
++        with tempfile.TemporaryDirectory() as directory:
++            pool, output = Path(directory)/'pool', Path(directory)/'out'
++            fixture_pool(pool, count=1)
++            output.mkdir()
++            sentinel = output/'keep.txt'
++            sentinel.write_text('original')
++            with self.assertRaisesRegex(ValueError, 'empty|new'):
++                splits.prepare_pool(pool, output)
++            self.assertEqual(sentinel.read_text(), 'original')
++
++    def test_cli_prints_progress_and_writes_final_json_report(self):
++        with tempfile.TemporaryDirectory() as directory:
++            fixture_pool(Path(directory)/'pool')
++            result = subprocess.run([sys.executable, str(ROOT/'embodied/envs/prepare_scenario_splits.py'),
++                '--input', str(Path(directory)/'pool'), '--output', str(Path(directory)/'out'),
++                '--progress-every', '4'], capture_output=True, text=True)
++            self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
++            self.assertIn('[scan', result.stderr)
++            self.assertIn('16/16', result.stderr)
++            report = json.loads(result.stdout)
++            self.assertEqual(report['independent_parent_group_count'], 8)
++            self.assertTrue(Path(report['manifest_path']).is_file())
++
++
++if __name__ == '__main__':
++    unittest.main()
+diff --git a/docs/scenario_split_preparation.md b/docs/scenario_split_preparation.md
+new file mode 100644
+--- /dev/null
++++ b/docs/scenario_split_preparation.md
+@@ -0,0 +1,82 @@
++# 真实 episode 统计与父场景划分
++
++本工具用于阶段四之前的数据准备：逐个检查 `posttrain_episode_pool` 中的 NPZ，统计记录的 SUMO episode 和父场景组，保存固定的 train/val/test 索引。默认比例为 80% / 10% / 10%，seed 为 0。运行时持续输出扫描进度，不生成窗口、归一化器或训练模型。
++
++## 在服务器运行
++
++同步本次代码后，在项目根目录和 `dreamersafe` 环境中执行：
++
++```bash
++conda activate dreamersafe
++cd /home/ubuntu/zw/dreamer_huifang_10_26
++
++RUN="sumo_fpi_log/20261021-105954_osrp_sumo_lag_vector_danger_sumo_None_0"
++OUT="$RUN/stage4_dataset_$(date +%Y%m%d_%H%M%S)"
++
++python -u embodied/envs/prepare_scenario_splits.py \
++  --input "$RUN/posttrain_episode_pool" \
++  --output "$OUT" \
++  --ratios 0.8 0.1 0.1 \
++  --split-seed 0 \
++  --progress-every 25
++
++python -m json.tool "$OUT/dataset_report.json"
++```
++
++不要把输出重定向到原来的 `stage3_dataset_report.json`。新工具自己写文件，终端保留进度和最终报告。输入应使用停止更新的采集目录或稳定快照；只纳入扫描开始时找到的文件，发现某文件在读取期间变化会拒绝该文件。每次使用新的输出目录，已有非空目录会被拒绝，防止覆盖固定划分。输入 NPZ 不会被修改。
++
++## 输出和判定
++
++| 文件 | 内容 |
++| --- | --- |
++| `dataset_report.json` | 去重后的 episode 数、父场景组数、各集合规模、来源类型、完整性、拒绝和排除原因、泄漏检查 |
++| `episode_index.jsonl` | 每个被接受 episode 的路径、SHA256、原生 dt、帧数、父场景组和集合名称 |
++| `split_manifest.json` | 固定 seed/比例和 train/val/test 完整成员清单；后续切窗必须遵守此清单 |
++
++优先查看以下字段：
++
++- `recorded_episode_count`：通过本工具检查、去除相同 ID 的字节相同副本，并排除冲突 ID 后的 episode 数。
++- `independent_parent_group_count`：`scenario_id` 与 `parent_scenario_id` 连接成的完整祖先连通组数。缺少父 episode 时仍按记录的父 ID 合组，孙代扰动也归入同组。
++- `splits`：每个集合的 episode 数和父场景组数。比例按父场景组分配，因此 episode 比例不一定正好为 80/10/10。
++- `leakage_check.passed`：集合间 episode ID、祖先标识和父场景组交集都必须为 0。
++- `rejected_file_count` / `excluded_file_count` / `duplicate_file_count`：分别列出损坏或冲突文件、不属于真实执行的数据，以及字节相同的重复 episode 文件。
++- `collection_completeness_counts`：完整、未完整及未知的采集数量。已执行的未完整前缀仍统计，并保留标记，避免静默删掉失败样本。
++
++退出码：
++
++| 码 | 含义 |
++| --- | --- |
++| `0` | 无拒绝文件，所有要求的集合都非空，祖先泄漏检查通过 |
++| `1` | 有损坏/冲突文件、没有可接受 episode，或配置/输出错误。逐文件错误会保存有效部分的清单和报告；先处理拒绝原因，再生成新的划分 |
++| `2` | 文件检查通过，但父场景组太少，按现有分配规则有集合为空。报告仍保存；补充独立父场景后重新划分，不拆开同源 episode 填空 |
++
++这里的“独立”仅指记录中的祖先关系分离，不证明地图、路况或语义独立。工具依赖记录的来源和父场景标识；错误或缺失的祖先标签仍需要修正。`sumo_original`、`sumo_copy`、`sumo_attack`、`sumo_replay` 可被纳入；显式非 SUMO 执行来源、合成轨迹和阶段三生成的候选轨迹被排除。旧数据没有 `prediction_source` 时依据 SUMO `source_type` 纳入，并计入 `source_type_only_provenance_count` 供检查。
++
++## 后续使用约束
++
++同一 episode 的所有窗口必须沿用清单中的集合；不要再次随机分配窗口。新增数据后应生成新版清单，并保留旧版以便复现实验。后续归一化器只用 train 拟合，val/test 不参与拟合。
++
++本次检查覆盖 canonical NPZ 的 schema、数组形状、时间戳和原生 dt 一致性；没有逐窗口检查目标车覆盖率，也没有验证候选的 SUMO 实际回放。非均匀时间戳数据可保留 `dt=null`，后续切窗阶段再决定采样方案。
++
++## 本地验证依据
++
++```bash
++python -m unittest discover -s tests
++```
++
++本次在 Python 3.8.3 / NumPy 1.24.4 下通过 137 项测试，其中新增 13 项覆盖祖先链、内存释放、去重/冲突、损坏归档、来源排除、空集合和命令行进度。640 组原划分函数对照结果一致。
++
++生成的格式测试池包含 60 个测试 episode / 20 个父场景组，得到 train 48/16、val 6/2、test 6/2（episode/组），交集为 0；这些是测试夹具，不是服务器采集统计。
++
++本地实际上传样本只有 `c4c745e14ccbd182d2815682.npz`，检查得到 1 个 episode / 1 个父场景组、train 1、val/test 0，退出码 2，源 SHA256 保持 `0652a3fb0e59e6860a8c5bdb5aedb08b729d192317776764fa729a6eedc905cf`。服务器全池的规模以运行上述命令后的报告为准。
++
++已有完整代码同步时直接运行。使用补丁包时，在项目根目录解压并应用：
++
++```bash
++unzip -o scenario_split_preparation.zip
++patch --dry-run -p1 < scenario_split_preparation.patch &&
++patch -p1 < scenario_split_preparation.patch
++python -m unittest discover -s tests
++```
++
++补丁包括 `scenario_data.py` 的祖先分组函数提取、新 CLI、新测试和本文档。旧数据准备入口与训练入口的默认行为保持原样。无需重新训练现有 Dreamer 模型或重建阶段三 episode。

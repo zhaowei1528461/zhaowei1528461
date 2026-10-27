@@ -1,0 +1,47 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <vType id="egoType" accel="2.6" decel="4.5" sigma="0.5" length="5.00" width="2.00" maxSpeed="8.0" guiShape="passenger" color="1,0,0" />
+    <vType id="npcType" accel="2.2" decel="4.5" sigma="0.6" length="4.76" width="1.95" maxSpeed="7.0" guiShape="passenger" color="0,1,0" />
+    <vType id="SlowCar" accel="1.0" decel="4.0" length="4.76" maxSpeed="3.5" width="1.95" minGap="3.0" vClass="passenger" color="0,1,0" carFollowModel="Krauss" />
+    <vType id="SlowCar1" accel="0.2" decel="4.0" length="4.76" maxSpeed="4.0" width="1.95" minGap="4.0" vClass="passenger" color="0,1,0" carFollowModel="Krauss" />
+    <vType id="FastCar" accel="4.0" decel="5.0" length="4.76" maxSpeed="5.0" minGap="3.0" width="1.95" vClass="passenger" color="0,1,0" />
+    <vType id="Auto" accel="3.0" decel="5.0" length="4.36" maxSpeed="8.0" minGap="4.0" width="1.95" vClass="passenger" color="0,0,0" />
+    <route id="merge_auto" edges="-138#0 -138#1 -139 79 78" />
+    <route id="merge_1" edges="82 81 80 79 78" />
+    <route id="merge_2" edges="81 80 79 78" />
+    <vehicle id="Auto" type="egoType" route="merge_auto" depart="0" departLane="0" departPos="1" departSpeed="3" />
+    <vehicle id="obs_001" type="SlowCar" route="merge_2" depart="0.1" departLane="1" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_002" type="SlowCar1" route="merge_2" depart="0.1" departLane="1" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_003" type="SlowCar1" route="merge_1" depart="0.2" departLane="1" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_000" type="SlowCar1" route="merge_1" depart="0.4" departLane="random" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_005" type="SlowCar1" route="merge_1" depart="0.4" departLane="random" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_010" type="npcType" route="merge_2" depart="0.6" departLane="1" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_009" type="SlowCar1" route="merge_2" depart="0.7" departLane="1" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_004" type="FastCar" route="merge_2" depart="0.9" departLane="random" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_007" type="SlowCar1" route="merge_2" depart="0.9" departLane="random" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_006" type="npcType" route="merge_2" depart="1.0" departLane="1" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_008" type="npcType" route="merge_2" depart="1.2" departLane="random" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_015" type="SlowCar1" route="merge_2" depart="1.2" departLane="1" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_017" type="FastCar" route="merge_2" depart="1.3" departLane="1" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_011" type="FastCar" route="merge_2" depart="1.4" departLane="random" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_012" type="SlowCar" route="merge_2" depart="1.4" departLane="random" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_013" type="SlowCar" route="merge_1" depart="1.4" departLane="1" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_016" type="SlowCar" route="merge_1" depart="1.5" departLane="random" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_019" type="FastCar" route="merge_1" depart="1.6" departLane="1" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_022" type="npcType" route="merge_2" depart="1.6" departLane="random" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_021" type="FastCar" route="merge_1" depart="1.7" departLane="1" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_023" type="npcType" route="merge_2" depart="1.7" departLane="1" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_014" type="SlowCar" route="merge_2" depart="1.8" departLane="1" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_018" type="SlowCar1" route="merge_1" depart="1.8" departLane="random" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_027" type="npcType" route="merge_2" depart="2.1" departLane="1" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_020" type="SlowCar" route="merge_2" depart="2.2" departLane="1" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_026" type="FastCar" route="merge_1" depart="2.3" departLane="1" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_024" type="SlowCar1" route="merge_1" depart="2.5" departLane="random" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_030" type="SlowCar" route="merge_2" depart="2.5" departLane="1" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_031" type="FastCar" route="merge_1" depart="2.5" departLane="1" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_028" type="FastCar" route="merge_1" depart="2.6" departLane="1" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_025" type="SlowCar" route="merge_2" depart="2.7" departLane="1" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_032" type="npcType" route="merge_2" depart="2.8" departLane="random" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_029" type="FastCar" route="merge_2" depart="2.9" departLane="1" departPos="random_free" departSpeed="random" />
+    <vehicle id="obs_033" type="SlowCar1" route="merge_1" depart="3.0" departLane="random" departPos="random_free" departSpeed="random" />
+</routes>
