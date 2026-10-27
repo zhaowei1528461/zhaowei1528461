@@ -1,0 +1,252 @@
+[
+  {
+    "window": 0,
+    "diagnostic_only": "same straight generator in observed target heading, no constraint relaxation",
+    "method": "random",
+    "seed": 0,
+    "evaluations": 256,
+    "valid_count": 22,
+    "valid_rate": 0.0859375,
+    "duplicate_count": 0,
+    "unique_valid_count": 22,
+    "failure_counts": {
+      "reverse_motion": 215,
+      "longitudinal_acceleration_limit": 215,
+      "yaw_rate_limit": 195,
+      "speed_limit": 164,
+      "lateral_acceleration_limit": 123,
+      "jerk_limit": 123,
+      "npc_background_overlap": 19
+    },
+    "top_risks": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "top_candidate_ids": [
+      "0068f05e5e1e223f18c0ad80",
+      "03fe971139656f607886f056",
+      "306534ce04606a2f401729a5",
+      "35e40aec7aafd8687cbcce1c",
+      "418398239a97202a99989873"
+    ],
+    "elapsed_seconds": 19.478115499999998,
+    "iterations": 1,
+    "final_behavior_probabilities": {
+      "cut_in": 0.5,
+      "keep_lane": 0.5
+    },
+    "simulation_verified": false,
+    "risk_source": "fixed_ego_candidate_rule"
+  },
+  {
+    "window": 100,
+    "diagnostic_only": "same straight generator in observed target heading, no constraint relaxation",
+    "method": "random",
+    "seed": 0,
+    "evaluations": 256,
+    "valid_count": 5,
+    "valid_rate": 0.01953125,
+    "duplicate_count": 0,
+    "unique_valid_count": 5,
+    "failure_counts": {
+      "npc_background_overlap": 58,
+      "reverse_motion": 193,
+      "yaw_rate_limit": 184,
+      "longitudinal_acceleration_limit": 123,
+      "lateral_acceleration_limit": 119,
+      "jerk_limit": 123,
+      "speed_limit": 91
+    },
+    "top_risks": [
+      0.048520040107627026,
+      0.048520040107627026,
+      0.048520040107627026,
+      0.048520040107627026,
+      0.048520040107627026
+    ],
+    "top_candidate_ids": [
+      "58c8604b81c65fdadd63361a",
+      "9dc79da910eac65a45c96700",
+      "aae80ecbe0257ed5945405b6",
+      "c037a0590bd38cbe89e19b37",
+      "d8947ae9f7d3329451133494"
+    ],
+    "elapsed_seconds": 28.268198599999998,
+    "iterations": 1,
+    "final_behavior_probabilities": {
+      "cut_in": 0.5,
+      "keep_lane": 0.5
+    },
+    "simulation_verified": false,
+    "risk_source": "fixed_ego_candidate_rule"
+  },
+  {
+    "window": 200,
+    "diagnostic_only": "same straight generator in observed target heading, no constraint relaxation",
+    "method": "random",
+    "seed": 0,
+    "evaluations": 256,
+    "valid_count": 11,
+    "valid_rate": 0.04296875,
+    "duplicate_count": 0,
+    "unique_valid_count": 11,
+    "failure_counts": {
+      "reverse_motion": 226,
+      "longitudinal_acceleration_limit": 226,
+      "yaw_rate_limit": 215,
+      "speed_limit": 173,
+      "lateral_acceleration_limit": 115,
+      "jerk_limit": 108,
+      "npc_background_overlap": 19
+    },
+    "top_risks": [
+      0.03373986214193304,
+      0.03373986214193304,
+      0.03373986214193304,
+      0.03373986214193304,
+      0.03373986214193304
+    ],
+    "top_candidate_ids": [
+      "193028f38c957c3981ad1a22",
+      "336678e9c6b6a41f3203ace4",
+      "34616cb64565d54747002ed3",
+      "401093b9d1109f8a9ef789b1",
+      "523df394fa0574bc6b6debae"
+    ],
+    "elapsed_seconds": 14.543336400000001,
+    "iterations": 1,
+    "final_behavior_probabilities": {
+      "cut_in": 0.5,
+      "keep_lane": 0.5
+    },
+    "simulation_verified": false,
+    "risk_source": "fixed_ego_candidate_rule"
+  },
+  {
+    "window": 300,
+    "diagnostic_only": "same straight generator in observed target heading, no constraint relaxation",
+    "method": "random",
+    "seed": 0,
+    "evaluations": 256,
+    "valid_count": 11,
+    "valid_rate": 0.04296875,
+    "duplicate_count": 0,
+    "unique_valid_count": 11,
+    "failure_counts": {
+      "reverse_motion": 227,
+      "longitudinal_acceleration_limit": 227,
+      "yaw_rate_limit": 216,
+      "speed_limit": 144,
+      "lateral_acceleration_limit": 97,
+      "jerk_limit": 79,
+      "npc_background_overlap": 18
+    },
+    "top_risks": [
+      0.05019168456963158,
+      0.05019168456963158,
+      0.05019168456963158,
+      0.05019168456963158,
+      0.05019168456963158
+    ],
+    "top_candidate_ids": [
+      "0d2f71894fc03f8e6ab4de39",
+      "1a856d77593888cff8f5cdc6",
+      "37b8ff44b7da02ae5a5c885c",
+      "3b55d13c570ca649c16d6cd1",
+      "5e9ea459183066aa7aa23a67"
+    ],
+    "elapsed_seconds": 15.411949700000001,
+    "iterations": 1,
+    "final_behavior_probabilities": {
+      "cut_in": 0.5,
+      "keep_lane": 0.5
+    },
+    "simulation_verified": false,
+    "risk_source": "fixed_ego_candidate_rule"
+  },
+  {
+    "window": 400,
+    "diagnostic_only": "same straight generator in observed target heading, no constraint relaxation",
+    "method": "random",
+    "seed": 0,
+    "evaluations": 256,
+    "valid_count": 2,
+    "valid_rate": 0.0078125,
+    "duplicate_count": 0,
+    "unique_valid_count": 2,
+    "failure_counts": {
+      "npc_background_overlap": 51,
+      "reverse_motion": 139,
+      "speed_limit": 81,
+      "yaw_rate_limit": 177,
+      "lateral_acceleration_limit": 71,
+      "jerk_limit": 56,
+      "longitudinal_acceleration_limit": 6,
+      "outside_drivable_envelope": 2,
+      "lane_speed_limit": 2
+    },
+    "top_risks": [
+      0.027205257273625987,
+      0.027205257273625987
+    ],
+    "top_candidate_ids": [
+      "8662326519d846a99167cb0d",
+      "ea06d743b3b45a24854bf194"
+    ],
+    "elapsed_seconds": 25.287689900000004,
+    "iterations": 1,
+    "final_behavior_probabilities": {
+      "cut_in": 0.5,
+      "keep_lane": 0.5
+    },
+    "simulation_verified": false,
+    "risk_source": "fixed_ego_candidate_rule"
+  },
+  {
+    "window": 500,
+    "diagnostic_only": "same straight generator in observed target heading, no constraint relaxation",
+    "method": "random",
+    "seed": 0,
+    "evaluations": 256,
+    "valid_count": 12,
+    "valid_rate": 0.046875,
+    "duplicate_count": 0,
+    "unique_valid_count": 12,
+    "failure_counts": {
+      "reverse_motion": 179,
+      "longitudinal_acceleration_limit": 202,
+      "yaw_rate_limit": 160,
+      "speed_limit": 85,
+      "jerk_limit": 12,
+      "npc_background_overlap": 33,
+      "outside_drivable_envelope": 5,
+      "lane_speed_limit": 3,
+      "lateral_acceleration_limit": 8
+    },
+    "top_risks": [
+      0.9,
+      0.04527569487379185,
+      0.04289406439398077,
+      0.04106823728920592,
+      0.040626746854204206
+    ],
+    "top_candidate_ids": [
+      "157c3c86b5dc1cc4406041f6",
+      "a6a4ba54ea49f0f2fd682f59",
+      "b810f29cac3fcf5131a46e16",
+      "3174f51580c62992bebf956e",
+      "58fbe91a9ce655b9213bccd0"
+    ],
+    "elapsed_seconds": 24.49265299999999,
+    "iterations": 1,
+    "final_behavior_probabilities": {
+      "cut_in": 0.5,
+      "keep_lane": 0.5
+    },
+    "simulation_verified": false,
+    "risk_source": "fixed_ego_candidate_rule"
+  }
+]

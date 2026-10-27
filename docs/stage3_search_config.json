@@ -1,0 +1,12 @@
+{
+  "max_lateral_accel": 2.5,
+  "max_jerk": 8.0,
+  "max_yaw_rate": 0.8,
+  "acceleration_ramp": 1.0,
+  "validation_dt": 0.1,
+  "road_grid_spacing": 0.5,
+  "default_lane_width": 3.2,
+  "dedup_resolution": 0.5,
+  "invalid_penalty": 1.0,
+  "duplicate_penalty": 0.1
+}

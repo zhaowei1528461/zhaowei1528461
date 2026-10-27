@@ -1,0 +1,78 @@
+{
+  "artifact_type": "recorded_pool_split_report",
+  "schema_version": 1,
+  "exit_code": 0,
+  "seed": 0,
+  "ratios": [
+    1.0,
+    0.0,
+    0.0
+  ],
+  "recorded_episode_count": 1,
+  "independent_parent_group_count": 1,
+  "distinct_scenario_id_count": 1,
+  "declared_parent_id_count": 1,
+  "source_type_counts": {
+    "sumo_copy": 1
+  },
+  "collection_completeness_counts": {
+    "true": 1
+  },
+  "native_dt_values": [
+    0.2
+  ],
+  "nonuniform_episode_count": 0,
+  "source_type_only_provenance_count": 0,
+  "zero_npc_episode_count": 0,
+  "splits": {
+    "train": {
+      "episodes": 1,
+      "parent_groups": 1
+    },
+    "val": {
+      "episodes": 0,
+      "parent_groups": 0
+    },
+    "test": {
+      "episodes": 0,
+      "parent_groups": 0
+    }
+  },
+  "leakage_check": {
+    "passed": true,
+    "overlap_counts": {
+      "train_val": {
+        "episode_ids": 0,
+        "lineage_tokens": 0,
+        "parent_groups": 0
+      },
+      "train_test": {
+        "episode_ids": 0,
+        "lineage_tokens": 0,
+        "parent_groups": 0
+      },
+      "val_test": {
+        "episode_ids": 0,
+        "lineage_tokens": 0,
+        "parent_groups": 0
+      }
+    }
+  },
+  "all_requested_splits_nonempty": true,
+  "windows_materialized": false,
+  "window_validity_checked": false,
+  "normalizer_fitted": false,
+  "validation_level": "canonical NPZ schema, array shapes and timestamps; no per-window eligibility checks",
+  "snapshot_rule": "Only NPZ paths discovered at scan start are included; source file hashes are recorded.",
+  "manifest_path": "C:\\Users\\MEC\\Desktop\\dreamer_huifang_10_21\\docs\\window_preparation\\real_single_episode\\split\\split_manifest.json",
+  "index_path": "C:\\Users\\MEC\\Desktop\\dreamer_huifang_10_21\\docs\\window_preparation\\real_single_episode\\split\\episode_index.jsonl",
+  "report_path": "C:\\Users\\MEC\\Desktop\\dreamer_huifang_10_21\\docs\\window_preparation\\real_single_episode\\split\\dataset_report.json",
+  "rejected_file_count": 0,
+  "excluded_file_count": 0,
+  "duplicate_file_count": 0,
+  "input_root": "C:\\Users\\MEC\\Desktop\\dreamer_huifang_10_21\\docs\\stage3_uploaded_debug\\sumo_fpi_log\\20261021-105954_osrp_sumo_lag_vector_danger_sumo_None_0\\posttrain_episode_pool",
+  "discovered_file_count": 1,
+  "rejected_files": [],
+  "excluded_files": [],
+  "duplicate_files": []
+}

@@ -1,0 +1,60 @@
+{
+  "artifact_type": "scenario_split_manifest",
+  "schema_version": 1,
+  "seed": 0,
+  "ratios": [
+    0.8,
+    0.1,
+    0.1
+  ],
+  "group_by": "scenario",
+  "input_root": "C:\\Users\\MEC\\Desktop\\dreamer_huifang_10_21\\docs\\stage3_uploaded_debug\\sumo_fpi_log\\20261021-105954_osrp_sumo_lag_vector_danger_sumo_None_0\\posttrain_episode_pool",
+  "normalizer_id": null,
+  "normalizer_path": null,
+  "leakage_check": {
+    "passed": true,
+    "overlap_counts": {
+      "train_val": {
+        "episode_ids": 0,
+        "lineage_tokens": 0,
+        "parent_groups": 0
+      },
+      "train_test": {
+        "episode_ids": 0,
+        "lineage_tokens": 0,
+        "parent_groups": 0
+      },
+      "val_test": {
+        "episode_ids": 0,
+        "lineage_tokens": 0,
+        "parent_groups": 0
+      }
+    }
+  },
+  "all_requested_splits_nonempty": false,
+  "preparation_exit_code": 2,
+  "splits": {
+    "train": [
+      {
+        "episode_id": "c4c745e14ccbd182d2815682",
+        "scenario_id": "sumo_variant:c4c745e14ccbd182d2815682",
+        "parent_scenario_id": "sumo:scenario_324_medium_veh065.sumocfg",
+        "map_id": null,
+        "input_source": "C:\\Users\\MEC\\Desktop\\dreamer_huifang_10_21\\docs\\stage3_uploaded_debug\\sumo_fpi_log\\20261021-105954_osrp_sumo_lag_vector_danger_sumo_None_0\\posttrain_episode_pool\\c4c745e14ccbd182d2815682.npz",
+        "relative_path": "c4c745e14ccbd182d2815682.npz",
+        "input_sha256": "0652a3fb0e59e6860a8c5bdb5aedb08b729d192317776764fa729a6eedc905cf",
+        "source_type": "sumo_copy",
+        "prediction_source": "sumo_execution",
+        "source_cfg": "/home/ubuntu/zw/safedreamer_fpi_danger_huifang/embodied/generated_scenarios_merge_7/scenario_324_medium_veh065.sumocfg",
+        "coordinate_frame": "world",
+        "frame_count": 593,
+        "npc_count": 58,
+        "dt": 0.2,
+        "collection_complete": true,
+        "parent_group_id": "scenario:sumo:scenario_324_medium_veh065.sumocfg"
+      }
+    ],
+    "val": [],
+    "test": []
+  }
+}

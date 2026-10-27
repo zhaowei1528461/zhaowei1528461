@@ -1,0 +1,50 @@
+{
+  "source_sha256": "0652a3fb0e59e6860a8c5bdb5aedb08b729d192317776764fa729a6eedc905cf",
+  "source_files_sha256": {
+    "embodied/envs/scene_parameters.py": "b459cde85c3f98070b6c1c11dd942b07b35a818a2d8887bf134d838064e32f56",
+    "embodied/envs/scene_search.py": "a30cb9d738a7dedace66b94c818f7ccbebbfe838b77564743e081c5be8a02334",
+    "embodied/envs/run_scene_search.py": "4b2d93be40350034c5e736eb12bd97054835b2641317c45ce24cb0b69f07c57e"
+  },
+  "accepted_exports_recomputed": 57,
+  "windows": [
+    {
+      "window": 0,
+      "exports_recomputed": 10,
+      "original_observed_rule_risk": 0.0,
+      "original_observed_risk_valid": true
+    },
+    {
+      "window": 100,
+      "exports_recomputed": 10,
+      "original_observed_rule_risk": 0.048520040107627026,
+      "original_observed_risk_valid": true
+    },
+    {
+      "window": 200,
+      "exports_recomputed": 10,
+      "original_observed_rule_risk": 0.03373986214193304,
+      "original_observed_risk_valid": true
+    },
+    {
+      "window": 300,
+      "exports_recomputed": 10,
+      "original_observed_rule_risk": 0.05019168456963158,
+      "original_observed_risk_valid": true
+    },
+    {
+      "window": 400,
+      "exports_recomputed": 7,
+      "original_observed_rule_risk": 0.027205257273625987,
+      "original_observed_risk_valid": true
+    },
+    {
+      "window": 500,
+      "exports_recomputed": 10,
+      "original_observed_rule_risk": 0.38420652839437447,
+      "original_observed_risk_valid": true
+    }
+  ],
+  "full_unittest_count": 124,
+  "full_unittest_seconds": 8.83,
+  "patch_application_verified_files": 7
+}

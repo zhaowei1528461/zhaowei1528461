@@ -1,0 +1,79 @@
+{
+  "exit_code": 0,
+  "dataset_source": "synthetic_kinematics",
+  "device": "cpu",
+  "torch_version": "2.3.0",
+  "model_config": {
+    "history": 11,
+    "future": 30,
+    "dt": 0.2,
+    "base_dim": 16,
+    "dim_mults": [
+      1,
+      2
+    ],
+    "condition_dim": 32,
+    "diffusion_steps": 20,
+    "beta_schedule": "cosine"
+  },
+  "dataset_fingerprint": {
+    "dataset_source": "synthetic_kinematics",
+    "generator_version": 1,
+    "seed": 0,
+    "window_config": {
+      "history": 11,
+      "future": 30,
+      "dt": 0.2,
+      "stride": 1
+    },
+    "normalizer_id": "synthetic-fixed-scales-v1"
+  },
+  "normalizer_id": "synthetic-fixed-scales-v1",
+  "optimization_steps": 64,
+  "epochs_completed": 16,
+  "train_windows_selected": 16,
+  "validation_windows_selected": 4,
+  "validation": {
+    "mean_ADE_m": 4157.909365384767,
+    "mean_FDE_m": 8026.847146226342,
+    "minADE_m": 3271.681750515536,
+    "minFDE_m": 3963.2633942097386,
+    "endpoint_diversity_m": 13010.365524471388,
+    "constant_velocity_ADE_m": 0.06651322860324758,
+    "constant_velocity_FDE_m": 0.014112192407862838,
+    "noise_prediction_loss": 0.2717660367488861,
+    "evaluated_windows": 4,
+    "evaluation_split": "val",
+    "samples_per_window": 4,
+    "sampling_method": "ddim",
+    "sampling_steps": 10,
+    "limited_evaluation": false,
+    "sampling_seconds": 0.16907670000000152,
+    "seconds_per_window": 0.04226917500000038,
+    "motion_valid_rate": 0.0,
+    "motion_limits": {
+      "max_speed": 40.0,
+      "max_accel": 4.0,
+      "max_decel": 8.0,
+      "max_jerk": 15.0,
+      "max_yaw_rate": 1.0,
+      "max_lateral_accel": 4.0
+    },
+    "motion_validity_definition": "sampled kinematics under provisional configured thresholds; not calibrated vehicle validity",
+    "road_valid_rate": null,
+    "road_checked_samples": 0,
+    "map_missing_window_rate": 1.0,
+    "road_validity_definition": "sampled footprint in current SUMO lane buffers; not simulator verification",
+    "oracle_metric_definition": "minADE and minFDE independently select the best of K against recorded labels",
+    "exported_candidates": [],
+    "plots": [],
+    "simulation_verified": false
+  },
+  "train_only_smoke": false,
+  "checkpoint_roundtrip_verified": true,
+  "best_checkpoint_selection": "val minADE over K samples",
+  "latest_checkpoint": "C:\\Users\\MEC\\Desktop\\dreamer_huifang_10_21\\docs\\stage4_diffusion_validation\\synthetic_train\\latest.pt",
+  "best_checkpoint": "C:\\Users\\MEC\\Desktop\\dreamer_huifang_10_21\\docs\\stage4_diffusion_validation\\synthetic_train\\best.pt",
+  "training_report_path": "C:\\Users\\MEC\\Desktop\\dreamer_huifang_10_21\\docs\\stage4_diffusion_validation\\synthetic_train\\training_report.json",
+  "simulation_verified": false
+}

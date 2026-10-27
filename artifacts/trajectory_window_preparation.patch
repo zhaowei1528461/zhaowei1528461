@@ -1,0 +1,940 @@
+diff --git a/embodied/envs/scenario_data.py b/embodied/envs/scenario_data.py
+--- a/embodied/envs/scenario_data.py
++++ b/embodied/envs/scenario_data.py
+@@ -498,6 +498,15 @@
+ def make_windows(episode, history=11, future=30, dt=0.1, stride=1,
+                  coordinate_frame="world", reference_line=None, event_config=None,
+                  event_only=False, event_before=3.0, event_after=1.0, max_gap=None):
++    """Return a list of windows; see iter_windows for streaming and semantics."""
++    return list(iter_windows(episode, history, future, dt, stride, coordinate_frame,
++                             reference_line, event_config, event_only, event_before,
++                             event_after, max_gap))
++
++
++def iter_windows(episode, history=11, future=30, dt=0.1, stride=1,
++                 coordinate_frame="world", reference_line=None, event_config=None,
++                 event_only=False, event_before=3.0, event_after=1.0, max_gap=None):
+     """Resample real timestamps; history ends at anchor, future starts anchor+dt.
+ 
+     No interpolation crosses a missing vehicle sample. Default maximum time gap
+@@ -517,7 +526,7 @@
+         raise ValueError("Event window times must be finite and nonnegative")
+     times = episode.timestamps
+     if not len(times):
+-        return []
++        return
+     if max_gap is None:
+         max_gap = 1.5 * float(np.median(np.diff(times))) if len(times) > 1 else dt
+     if not np.isfinite(_number(max_gap)) or max_gap <= 0:
+@@ -526,7 +535,7 @@
+     target = times[0] + np.arange(count, dtype=float) * dt
+     total = history + future
+     if count < total:
+-        return []
++        return
+     ego, ego_mask = _resample_states(times, episode.ego_state, episode.ego_valid_mask, target, max_gap)
+     npcs, npc_mask = _resample_states(times, episode.npc_states, episode.npc_valid_mask, target, max_gap)
+     actions = np.full((count, episode.ego_actions.shape[1]), np.nan)
+@@ -549,7 +558,6 @@
+     events = _derive_events(canonical, times, episode.ego_state, episode.ego_valid_mask, event_config)
+     event_times = {name: times[events[name]] for name in EVENT_NAMES}
+     all_events = np.concatenate(list(event_times.values()))
+-    windows = []
+     for start in range(0, count - total + 1, stride):
+         anchor_index = start + history - 1
+         anchor_time = target[anchor_index]
+@@ -570,7 +578,7 @@
+             if not ego_mask[anchor_index]:
+                 emask[:] = False
+                 nmask[:] = False
+-        windows.append(ScenarioWindow(episode.scenario_id, episode.episode_id, episode.parent_scenario_id,
++        yield ScenarioWindow(episode.scenario_id, episode.episode_id, episode.parent_scenario_id,
+                        episode.map_id, episode.seed, dt, coordinate_frame, target[span].copy(), float(anchor_time),
+                        window_ego[:history], window_ego[history:], window_npcs[:history], window_npcs[history:],
+                        emask, nmask, episode.npc_ids, actions[span].copy(), action_mask[span].copy(), None,
+@@ -581,8 +589,7 @@
+                         "vehicle_fields": list(VEHICLE_FIELDS), "state_coordinate_frame": coordinate_frame,
+                         "frenet_fields": ["s", "d"], "action_alignment": "interval_start",
+                         **{name: copy.deepcopy(episode.metadata[name]) for name in SOURCE_METADATA_FIELDS
+-                           if name in episode.metadata}}))
+-    return windows
++                           if name in episode.metadata}})
+ 
+ 
+ def group_episodes(episodes, group_by="scenario"):
+diff --git a/embodied/envs/prepare_trajectory_windows.py b/embodied/envs/prepare_trajectory_windows.py
+new file mode 100644
+--- /dev/null
++++ b/embodied/envs/prepare_trajectory_windows.py
+@@ -0,0 +1,422 @@
++"""Audit frozen-split NPC supervision and fit train-only ego-centric statistics.
++
++Retains one episode and a window at a time. Original NPZs and the split manifest
++remain read-only; this writes indexes/statistics, not tensors or model weights.
++"""
++from __future__ import annotations
++
++import argparse
++from collections import Counter
++import hashlib
++import json
++import math
++from pathlib import Path
++import sys
++from types import SimpleNamespace
++import zipfile
++import zlib
++
++import numpy as np
++
++try:
++    from .scenario_data import SCHEMA_VERSION, VEHICLE_FIELDS, ScenarioNormalizer, group_episodes, iter_windows, load_episode
++except ImportError:
++    from scenario_data import SCHEMA_VERSION, VEHICLE_FIELDS, ScenarioNormalizer, group_episodes, iter_windows, load_episode
++
++
++SPLITS = ('train', 'val', 'test')
++INPUT_ERRORS = (ValueError, TypeError, KeyError, OSError, EOFError, AttributeError,
++                IndexError, OverflowError, zipfile.BadZipFile, zlib.error)
++FIT_SCOPE = ('Eligible train windows only; ego history plus complete target NPC history/future; '
++             'overlapping windows contribute repeatedly; future ego is excluded')
++
++
++def _hash(path):
++    digest = hashlib.sha256()
++    with Path(path).open('rb') as stream:
++        for block in iter(lambda: stream.read(1024*1024), b''):
++            digest.update(block)
++    return digest.hexdigest()
++
++
++def _write_json(path, payload):
++    Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False)+'\n', encoding='utf-8')
++
++
++class _Moments:
++    """Stable parallel population moments; no state rows retained."""
++    def __init__(self, width=8):
++        self.count = 0
++        self.mean = np.zeros(width)
++        self.m2 = np.zeros(width)
++        self.sin_yaw = self.cos_yaw = 0.
++
++    def merge(self, other):
++        if not other.count:
++            return
++        count = self.count + other.count
++        delta = other.mean - self.mean
++        self.m2 += other.m2 + delta**2 * (self.count*other.count/count)
++        self.mean += delta*(other.count/count)
++        self.count = count
++        self.sin_yaw += other.sin_yaw
++        self.cos_yaw += other.cos_yaw
++
++    def update(self, values):
++        if not len(values):
++            return
++        if not np.isfinite(values).all():
++            raise ValueError('Nonfinite value in masked training population')
++        part = _Moments(values.shape[1])
++        part.count = len(values)
++        part.mean = np.mean(values, axis=0)
++        part.m2 = np.sum((values-part.mean)**2, axis=0)
++        if values.shape[1] == 8:
++            part.sin_yaw = float(np.sin(values[:, 4]).sum())
++            part.cos_yaw = float(np.cos(values[:, 4]).sum())
++        self.merge(part)
++
++
++def _read_manifest(path, input_root):
++    manifest_hash = _hash(path)
++    payload = json.loads(Path(path).read_text(encoding='utf-8'))
++    if (not isinstance(payload, dict) or payload.get('artifact_type') != 'scenario_split_manifest'
++            or payload.get('schema_version') != SCHEMA_VERSION):
++        raise ValueError('Expected a canonical frozen scenario split manifest')
++    if payload.get('preparation_exit_code') != 0 or payload.get('all_requested_splits_nonempty') is not True:
++        raise ValueError('Frozen split preparation must succeed before preparing windows')
++    ratios = payload.get('ratios')
++    if (not isinstance(ratios, list) or len(ratios) != 3
++            or any(not isinstance(r, (int, float)) or not math.isfinite(r) or r < 0 for r in ratios)
++            or not np.isclose(sum(ratios), 1.)):
++        raise ValueError('Invalid frozen split ratios')
++    if not isinstance(payload.get('splits'), dict) or set(payload['splits']) != set(SPLITS):
++        raise ValueError('Expected train/val/test frozen memberships')
++    root = Path(input_root if input_root is not None else payload['input_root']).resolve()
++    entries, ids = [], set()
++    for name in SPLITS:
++        rows = payload['splits'][name]
++        if not isinstance(rows, list):
++            raise ValueError('Split members must be a list')
++        for row in rows:
++            if not isinstance(row, dict):
++                raise ValueError('Split member must be an object')
++            for key in ('episode_id', 'scenario_id', 'relative_path', 'input_sha256'):
++                if not isinstance(row.get(key), str) or not row[key].strip():
++                    raise ValueError('Missing frozen member field: '+key)
++            for key in ('parent_scenario_id', 'map_id'):
++                if row.get(key) is not None and not isinstance(row[key], str):
++                    raise ValueError('Invalid ancestry identity: '+key)
++            if row['episode_id'] in ids:
++                raise ValueError('Duplicate episode membership: '+row['episode_id'])
++            ids.add(row['episode_id'])
++            relative = Path(row['relative_path'])
++            if relative.is_absolute() or '..' in relative.parts:
++                raise ValueError('Member relative path escapes input root')
++            source = (root/relative).resolve()
++            try:
++                source.relative_to(root)
++            except ValueError as exc:
++                raise ValueError('Member relative path escapes input root') from exc
++            digest = row['input_sha256']
++            if len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
++                raise ValueError('Invalid source SHA256')
++            entries.append(dict(row, split=name, resolved_source=str(source)))
++    if not entries:
++        raise ValueError('Frozen manifest has no episodes')
++    groups = group_episodes([SimpleNamespace(**e) for e in entries])
++    group_ids = {e.episode_id: key for key, rows in groups.items() for e in rows}
++    identities, tokens, ancestry = {}, {}, {}
++    for name in SPLITS:
++        rows = [e for e in entries if e['split'] == name]
++        identities[name] = {e['episode_id'] for e in rows}
++        tokens[name] = {token for e in rows for token in (e['scenario_id'], e.get('parent_scenario_id')) if token}
++        ancestry[name] = {group_ids[e['episode_id']] for e in rows}
++    overlap = {}
++    for i, left in enumerate(SPLITS):
++        for right in SPLITS[i+1:]:
++            overlap[left+'_'+right] = {'episode_ids': len(identities[left]&identities[right]),
++                                      'lineage_tokens': len(tokens[left]&tokens[right]),
++                                      'parent_groups': len(ancestry[left]&ancestry[right])}
++    if any(any(row.values()) for row in overlap.values()):
++        raise ValueError('Frozen manifest contains cross-split ancestry overlap/leakage')
++    for e in entries:
++        if e.get('parent_group_id') != group_ids[e['episode_id']]:
++            raise ValueError('Frozen ancestry group identity contradicts memberships')
++    return payload, entries, root, manifest_hash, {'passed': True, 'overlap_counts': overlap}
++
++
++def _load_checked(entry):
++    path = Path(entry['resolved_source'])
++    before = path.stat()
++    if _hash(path) != entry['input_sha256']:
++        raise ValueError('Source hash does not match frozen manifest')
++    episode = load_episode(path)
++    for key in ('episode_id', 'scenario_id', 'parent_scenario_id', 'map_id'):
++        if getattr(episode, key) != entry.get(key):
++            raise ValueError('Loaded episode identity mismatch: '+key)
++    if episode.coordinate_frame != 'world':
++        raise ValueError('Ego-centric preparation requires canonical world episodes')
++    return episode, (before.st_size, before.st_mtime_ns)
++
++
++def _check_unchanged(entry, fingerprint):
++    path = Path(entry['resolved_source'])
++    after = path.stat()
++    if (after.st_size, after.st_mtime_ns) != fingerprint or _hash(path) != entry['input_sha256']:
++        raise ValueError('Source file changed during window preparation')
++
++
++def _counters(history, future):
++    return dict(episodes=0, windows_scanned=0, eligible_windows=0, complete_target_trajectories=0,
++                anchor_npc_samples=0, complete_history_targets=0, complete_future_targets=0,
++                ego_history_incomplete_windows=0, ego_future_complete_windows=0,
++                no_complete_target_windows=0, episodes_without_eligible_windows=0,
++                contiguous_history_frames={str(i): 0 for i in range(history+1)},
++                contiguous_future_frames={str(i): 0 for i in range(future+1)})
++
++
++def _merge_counts(total, part):
++    for key, value in part.items():
++        if isinstance(value, dict):
++            for k, v in value.items():
++                total[key][k] += v
++        else:
++            total[key] += value
++
++
++def _coverage(window, history):
++    ego = np.concatenate((window.history_ego, window.future_ego))
++    npcs = np.concatenate((window.history_npcs, window.future_npcs))
++    ego_mask = window.ego_mask & np.isfinite(ego).all(axis=-1)
++    npc_mask = window.npc_mask & np.isfinite(npcs).all(axis=-1)
++    anchor = npc_mask[history-1]
++    hist = np.cumprod(npc_mask[:history][::-1], axis=0).sum(axis=0)
++    fut = np.cumprod(npc_mask[history:], axis=0).sum(axis=0)
++    targets = np.flatnonzero(npc_mask.all(axis=0))
++    return ego_mask, anchor, hist, fut, targets
++
++
++def _training_values(window, targets):
++    # All values are already in the fixed ego-anchor frame; future ego excluded.
++    return np.concatenate((window.history_ego,
++                           window.history_npcs[:, targets].reshape(-1, 8),
++                           window.future_npcs[:, targets].reshape(-1, 8)))
++
++
++def _scan_episode(entry, config, stream):
++    episode, fingerprint = _load_checked(entry)
++    history, future = config['history'], config['future']
++    counts, moments = _counters(history, future), _Moments()
++    counts['episodes'] = 1
++    for ordinal, window in enumerate(iter_windows(episode, coordinate_frame='ego-centric', **config)):
++        counts['windows_scanned'] += 1
++        ego, anchor, hist, fut, targets = _coverage(window, history)
++        counts['anchor_npc_samples'] += int(anchor.sum())
++        counts['complete_history_targets'] += int(np.count_nonzero((hist == history)&anchor))
++        counts['complete_future_targets'] += int(np.count_nonzero((fut == future)&anchor))
++        for value, count in Counter(int(v) for v in hist[anchor]).items():
++            counts['contiguous_history_frames'][str(value)] += count
++        for value, count in Counter(int(v) for v in fut[anchor]).items():
++            counts['contiguous_future_frames'][str(value)] += count
++        counts['ego_future_complete_windows'] += int(ego[history:].all())
++        if not ego[:history].all():
++            counts['ego_history_incomplete_windows'] += 1
++            continue
++        if not len(targets):
++            counts['no_complete_target_windows'] += 1
++            continue
++        counts['eligible_windows'] += 1
++        counts['complete_target_trajectories'] += len(targets)
++        row = {'split': entry['split'], 'episode_id': episode.episode_id,
++               'scenario_id': episode.scenario_id, 'parent_group_id': entry['parent_group_id'],
++               'input_source': entry['resolved_source'], 'relative_path': entry['relative_path'],
++               'input_sha256': entry['input_sha256'], 'window_index': ordinal,
++               'start_grid_index': ordinal*config['stride'], 'anchor_timestamp': window.anchor_timestamp,
++               'eligible_target_ids': [window.npc_ids[i] for i in targets],
++               'ego_future_complete': bool(ego[history:].all())}
++        stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False)+'\n')
++        if entry['split'] == 'train':
++            moments.update(_training_values(window, targets))
++    counts['episodes_without_eligible_windows'] = int(not counts['eligible_windows'])
++    _check_unchanged(entry, fingerprint)
++    provenance = {key: episode.metadata.get(key) for key in
++                  ('prediction_source', 'position_reference', 'state_alignment', 'event_verification')}
++    return counts, moments, provenance
++
++
++def _yaw_episode(entry, config, mean_yaw):
++    episode, fingerprint = _load_checked(entry)
++    moments = _Moments(1)
++    for window in iter_windows(episode, coordinate_frame='ego-centric', **config):
++        ego, _, _, _, targets = _coverage(window, config['history'])
++        if not ego[:config['history']].all() or not len(targets):
++            continue
++        yaw = _training_values(window, targets)[:, 4] - mean_yaw
++        moments.update(np.arctan2(np.sin(yaw), np.cos(yaw))[:, None])
++    _check_unchanged(entry, fingerprint)
++    return moments
++
++
++def prepare_windows(manifest_path, output, history=11, future=30, dt=.2, stride=1,
++                    input_root=None, progress=None):
++    for key, value in (('history', history), ('future', future), ('stride', stride)):
++        if isinstance(value, bool) or not isinstance(value, (int, np.integer)) or value < 1:
++            raise ValueError(key+' must be a positive integer')
++    if not np.isfinite(dt) or dt <= 0:
++        raise ValueError('dt must be finite and positive')
++    config = {'history': int(history), 'future': int(future), 'dt': float(dt), 'stride': int(stride)}
++    output = Path(output).resolve()
++    if output.exists() and (not output.is_dir() or any(output.iterdir())):
++        raise ValueError('Output directory must be new or empty')
++    manifest_path = Path(manifest_path).resolve()
++    frozen, entries, root, manifest_hash, audit = _read_manifest(manifest_path, input_root)
++    output.mkdir(parents=True, exist_ok=True)
++    index_path = output/'window_index.jsonl'
++    totals = {name: _counters(history, future) for name in SPLITS}
++    episodes, rejected, fitted_entries = [], [], []
++    moments = _Moments()
++    if progress:
++        progress('windows', 0, len(entries), '', 'start')
++    with index_path.open('w', encoding='utf-8', newline='\n') as stream:
++        for number, entry in enumerate(entries, 1):
++            checkpoint = stream.tell()
++            try:
++                counts, part, provenance = _scan_episode(entry, config, stream)
++                _merge_counts(totals[entry['split']], counts)
++                episodes.append({'episode_id': entry['episode_id'], 'split': entry['split'],
++                                 **counts, 'source_provenance': provenance})
++                if entry['split'] == 'train' and part.count:
++                    moments.merge(part)
++                    fitted_entries.append(entry)
++                status = 'accepted'
++            except INPUT_ERRORS as error:
++                stream.seek(checkpoint)
++                stream.truncate()
++                rejected.append({'episode_id': entry['episode_id'], 'phase': 'windows',
++                                 'source': entry['resolved_source'], 'error': type(error).__name__+': '+str(error)})
++                status = 'rejected'
++            if progress:
++                progress('windows', number, len(entries), entry['resolved_source'], status)
++    nonempty = all(not ratio or totals[name]['eligible_windows'] > 0
++                   for name, ratio in zip(SPLITS, frozen['ratios']))
++    normalizer = None
++    if not rejected and nonempty and moments.count:
++        mean_yaw = math.atan2(moments.sin_yaw, moments.cos_yaw)
++        residual = _Moments(1)
++        if progress:
++            progress('normalizer', 0, len(fitted_entries), '', 'start')
++        for number, entry in enumerate(fitted_entries, 1):
++            try:
++                residual.merge(_yaw_episode(entry, config, mean_yaw))
++                status = 'accepted'
++            except INPUT_ERRORS as error:
++                rejected.append({'episode_id': entry['episode_id'], 'phase': 'normalizer',
++                                 'source': entry['resolved_source'], 'error': type(error).__name__+': '+str(error)})
++                status = 'rejected'
++            if progress:
++                progress('normalizer', number, len(fitted_entries), entry['resolved_source'], status)
++        if not rejected:
++            if residual.count != moments.count:
++                raise ValueError('Normalizer passes disagree on the fitting population')
++            mean = moments.mean.copy()
++            mean[4] = mean_yaw
++            std = np.sqrt(np.maximum(moments.m2/moments.count, 0.))
++            std[4] = math.sqrt(max(float(residual.m2[0]/residual.count), 0.))
++            std = np.where(std < 1e-8, 1., std)
++            training_ids = tuple(sorted(e['episode_id'] for e in fitted_entries))
++            identity = json.dumps({'config': config, 'coordinate_frame': 'ego-centric', 'fit_scope': FIT_SCOPE,
++                                   'mean': mean.tolist(), 'std': std.tolist(), 'count': moments.count,
++                                   'training_sources': sorted((e['episode_id'], e['input_sha256']) for e in fitted_entries)},
++                                  sort_keys=True, allow_nan=False)
++            normalizer = ScenarioNormalizer(mean, std, moments.count, training_ids,
++                         'normalizer-'+hashlib.sha256(identity.encode('utf-8')).hexdigest()[:20], 'ego-centric')
++    if not rejected and normalizer is not None:
++        # Held-out files have no second fit pass. Verify the complete snapshot
++        # again before publishing, including train files whose fit pass ended.
++        if progress:
++            progress('source_check', 0, len(entries), '', 'start')
++        for number, entry in enumerate(entries, 1):
++            try:
++                if _hash(entry['resolved_source']) != entry['input_sha256']:
++                    raise ValueError('Source hash changed after its processing pass')
++                status = 'accepted'
++            except INPUT_ERRORS as error:
++                rejected.append({'episode_id': entry['episode_id'], 'phase': 'source_check',
++                                 'source': entry['resolved_source'], 'error': type(error).__name__+': '+str(error)})
++                status = 'rejected'
++            if progress:
++                progress('source_check', number, len(entries), entry['resolved_source'], status)
++    if _hash(manifest_path) != manifest_hash:
++        rejected.append({'phase': 'finalize', 'source': str(manifest_path),
++                         'error': 'Frozen split manifest changed during preparation'})
++        normalizer = None
++    exit_code = 1 if rejected else (0 if nonempty and normalizer is not None else 2)
++    if exit_code == 0:
++        normalizer.save(output/'normalizer.json')
++    normalizer_info = {'fitted': exit_code == 0, 'coordinate_frame': 'ego-centric', 'fit_scope': FIT_SCOPE,
++                       'normalizer_id': normalizer.normalizer_id if exit_code == 0 else None,
++                       'path': str(output/'normalizer.json') if exit_code == 0 else None,
++                       'training_state_count': moments.count,
++                       'training_episode_ids': sorted(e['episode_id'] for e in fitted_entries)}
++    dataset = {'artifact_type': 'trajectory_window_dataset', 'schema_version': SCHEMA_VERSION,
++               'preparation_exit_code': exit_code, 'source_manifest_path': str(manifest_path),
++               'source_manifest_sha256': manifest_hash, 'input_root': str(root),
++               'window_config': config, 'coordinate_frame': 'ego-centric', 'vehicle_fields': list(VEHICLE_FIELDS),
++               'position_reference': 'as_recorded; see per-episode source provenance',
++               'target_rule': 'All eight fields finite and masked throughout history and future',
++               'ego_conditioning': 'History only; future ego excluded from normalizer',
++               'index_path': str(index_path), 'index_sha256': _hash(index_path),
++               'normalizer': normalizer_info, 'leakage_check': audit,
++               'split_window_counts': {name: totals[name]['eligible_windows'] for name in SPLITS},
++               'tensors_materialized': False}
++    _write_json(output/'window_dataset_manifest.json', dataset)
++    report = {'artifact_type': 'trajectory_window_report', 'schema_version': SCHEMA_VERSION,
++              'exit_code': exit_code, 'window_config': config,
++              'history_seconds': (history-1)*float(dt), 'future_seconds': future*float(dt),
++              'coordinate_frame': 'ego-centric', 'source_manifest_path': str(manifest_path),
++              'source_manifest_sha256': manifest_hash, 'manifest_episode_count': len(entries),
++              'splits': totals, 'leakage_check': audit, 'all_requested_splits_have_eligible_windows': nonempty,
++              'normalizer': normalizer_info, 'rejected_episodes': rejected, 'episodes': episodes,
++              'validation_level': 'Recorded mask/finite coverage only; not physical or simulator validity',
++              'index_path': str(index_path), 'dataset_manifest_path': str(output/'window_dataset_manifest.json'),
++              'report_path': str(output/'window_report.json')}
++    _write_json(output/'window_report.json', report)
++    return report
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('--manifest', required=True)
++    parser.add_argument('--output', required=True)
++    parser.add_argument('--input-root', help='Relocated pool root; frozen relative paths and hashes are preserved')
++    parser.add_argument('--history', type=int, default=11)
++    parser.add_argument('--future', type=int, default=30)
++    parser.add_argument('--dt', type=float, default=.2)
++    parser.add_argument('--stride', type=int, default=1)
++    parser.add_argument('--progress-every', type=int, default=25)
++    args = parser.parse_args(argv)
++    if args.progress_every < 1:
++        parser.error('--progress-every must be positive')
++    def progress(phase, number, total, path, status):
++        if number in (0, 1, total) or number % args.progress_every == 0 or status == 'rejected':
++            print('[%s %d/%d] %s %s' % (phase, number, total, status, Path(path).name if path else ''),
++                  file=sys.stderr, flush=True)
++    try:
++        report = prepare_windows(args.manifest, args.output, history=args.history, future=args.future,
++                                 dt=args.dt, stride=args.stride, input_root=args.input_root, progress=progress)
++        # Detailed histograms and per-episode provenance stay in the saved report.
++        summary = {key: value for key, value in report.items() if key not in ('episodes', 'splits', 'normalizer')}
++        summary['splits'] = {name: {key: value for key, value in counts.items() if not isinstance(value, dict)}
++                             for name, counts in report['splits'].items()}
++        summary['normalizer'] = {key: value for key, value in report['normalizer'].items()
++                                 if key != 'training_episode_ids'}
++        summary['normalizer']['training_episode_count'] = len(report['normalizer']['training_episode_ids'])
++    except INPUT_ERRORS as error:
++        summary = {'exit_code': 1, 'error': type(error).__name__+': '+str(error)}
++    print(json.dumps(summary, ensure_ascii=False, indent=2, allow_nan=False), flush=True)
++    return summary['exit_code']
++
++
++if __name__ == '__main__':
++    sys.exit(main())
+diff --git a/tests/test_trajectory_windows.py b/tests/test_trajectory_windows.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_trajectory_windows.py
+@@ -0,0 +1,348 @@
++"""Frozen-split coverage and train-only local normalization behavior."""
++import hashlib
++import importlib
++import json
++import math
++from pathlib import Path
++import shutil
++import subprocess
++import sys
++import tempfile
++import unittest
++from unittest import mock
++import weakref
++
++import numpy as np
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(ROOT/'embodied/envs'))
++import scenario_data as data
++import prepare_scenario_splits as split_tool
++
++try:
++    tool = importlib.import_module('prepare_trajectory_windows')
++except ImportError:
++    tool = None
++
++
++def sha(path):
++    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
++
++
++def sample(i=0, count=7):
++    frames = []
++    for step in range(count):
++        t = .2*step
++        frames.append({'sim_time': t, 'state': [0.]*31, 'action': [0.],
++                       'vehicles': [dict(id='Auto', pos=[100.+4*t, 0.], v=4., yaw=0., a=0., length=4.5, width=1.8),
++                                    dict(id='npc', pos=[110.+2*t, 0.], v=2., yaw=0., a=0., length=4.5, width=1.8)]})
++    return {'episode_id': 'e%d' % i, 'scenario_id': 's%d' % i, 'source_type': 'sumo_original',
++            'metadata': {'prediction_source': 'sumo_execution', 'collection_complete': True,
++                         'position_reference': 'front_bumper_center'},
++            'replay_trajectory': {'frames': frames}}
++
++
++def pool_fixture(work, alter=None):
++    pool = work/'pool'
++    for i in range(8):
++        record = sample(i)
++        if alter:
++            alter(i, record)
++        data.write_episode(data.episode_from_record(record), pool)
++    report = split_tool.prepare_pool(pool, work/'split')
++    assert report['exit_code'] == 0
++    return work/'split/split_manifest.json'
++
++
++def read_json(path):
++    return json.loads(Path(path).read_text(encoding='utf-8'))
++
++
++class WindowIteratorTest(unittest.TestCase):
++    def test_iterator_yields_independent_windows_with_original_timing_and_masks(self):
++        self.assertTrue(hasattr(data, 'iter_windows'), 'Streaming window iterator is missing')
++        episode = data.episode_from_record(sample())
++        iterator = data.iter_windows(episode, history=3, future=2, dt=.2)
++        self.assertIs(iter(iterator), iterator)
++        first = next(iterator)
++        np.testing.assert_allclose(first.timestamps, [0., .2, .4, .6, .8])
++        self.assertAlmostEqual(first.anchor_timestamp, .4)
++        self.assertTrue(first.ego_mask.all())
++        self.assertTrue(first.npc_mask.all())
++        first.history_ego[:] = -123.
++        second = next(iterator)
++        self.assertAlmostEqual(second.anchor_timestamp, .6)
++        self.assertGreater(second.history_ego[0, 0], 100.)
++        self.assertEqual(len(list(iterator)), 1)
++        self.assertIsInstance(data.make_windows(episode, history=3, future=2, dt=.2), list)
++
++
++class TrajectoryPreparationTest(unittest.TestCase):
++    def setUp(self):
++        self.assertIsNotNone(tool, 'Frozen-split trajectory preparation tool is missing')
++
++    def prepare(self, manifest, output, **kwargs):
++        return tool.prepare_windows(manifest, output, history=3, future=2, dt=.2, **kwargs)
++
++    def test_frozen_membership_and_analytic_local_train_moments(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            manifest = pool_fixture(work)
++            original = read_json(manifest)
++            before = {str(p): sha(p) for p in (work/'pool').glob('*.npz')}
++            before[str(manifest)] = sha(manifest)
++            report = self.prepare(manifest, work/'windows')
++            self.assertEqual(report['exit_code'], 0)
++            self.assertEqual({k: v['eligible_windows'] for k, v in report['splits'].items()},
++                             {'train': 18, 'val': 3, 'test': 3})
++            self.assertEqual(report['splits']['train']['complete_target_trajectories'], 18)
++            self.assertTrue(report['leakage_check']['passed'])
++            lines = [json.loads(line) for line in (work/'windows/window_index.jsonl').read_text().splitlines()]
++            self.assertEqual(len(lines), 24)
++            expected = {r['episode_id']: name for name, rows in original['splits'].items() for r in rows}
++            for line in lines:
++                self.assertEqual(line['split'], expected[line['episode_id']])
++                self.assertEqual(line['eligible_target_ids'], ['npc'])
++            normalizer = data.ScenarioNormalizer.load(work/'windows/normalizer.json')
++            self.assertEqual(normalizer.coordinate_frame, 'ego-centric')
++            self.assertEqual(normalizer.count, 144)  # 18*(3 ego history + 5 target samples).
++            self.assertAlmostEqual(normalizer.mean[0], 5.2)
++            self.assertEqual(normalizer.std[1], 1.)
++            self.assertEqual(set(normalizer.training_episode_ids), {'e0', 'e1', 'e2', 'e3', 'e6', 'e7'})
++            for path, identity in before.items():
++                self.assertEqual(sha(path), identity)
++            dataset = read_json(work/'windows/window_dataset_manifest.json')
++            self.assertEqual(dataset['source_manifest_sha256'], sha(manifest))
++            self.assertFalse(dataset['tensors_materialized'])
++
++    def test_extreme_held_out_states_do_not_affect_fitted_statistics(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            first = pool_fixture(work/'first')
++            def alter(i, record):
++                if i in (4, 5):
++                    for frame in record['replay_trajectory']['frames']:
++                        frame['vehicles'][1].update(pos=[-1e9, 1e9], length=1000., v=500.)
++            second = pool_fixture(work/'second', alter=alter)
++            self.prepare(first, work/'out1')
++            self.prepare(second, work/'out2')
++            a = data.ScenarioNormalizer.load(work/'out1/normalizer.json')
++            b = data.ScenarioNormalizer.load(work/'out2/normalizer.json')
++            np.testing.assert_array_equal(a.mean, b.mean)
++            np.testing.assert_array_equal(a.std, b.std)
++            self.assertEqual(a.count, b.count)
++
++    def test_gap_coverage_is_counted_and_incomplete_targets_are_not_supervision(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            def alter(i, record):
++                for step, frame in enumerate(record['replay_trajectory']['frames']):
++                    if step != 2:
++                        frame['vehicles'].append(dict(frame['vehicles'][1], id='history_gap'))
++                    if step < 5:
++                        frame['vehicles'].append(dict(frame['vehicles'][1], id='future_gap'))
++            manifest = pool_fixture(work, alter=alter)
++            report = self.prepare(manifest, work/'windows')
++            rows = [json.loads(line) for line in (work/'windows/window_index.jsonl').read_text().splitlines()]
++            episode_rows = [r for r in rows if r['episode_id'] == 'e0']
++            self.assertEqual([r['eligible_target_ids'] for r in episode_rows],
++                             [['future_gap', 'npc'], ['npc'], ['npc']])
++            train = report['splits']['train']
++            self.assertEqual(train['anchor_npc_samples'], 48)  # 6 episodes*(2+3+3).
++            self.assertEqual(train['complete_target_trajectories'], 24)
++            self.assertEqual(train['contiguous_history_frames']['1'], 6)
++            self.assertEqual(train['contiguous_history_frames']['2'], 6)
++            self.assertEqual(train['contiguous_future_frames']['0'], 6)
++            self.assertEqual(train['contiguous_future_frames']['1'], 6)
++
++    def test_invalid_ego_history_excludes_the_window_without_zero_filling(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            def alter(i, record):
++                record['replay_trajectory']['frames'][2]['vehicles'][0].pop('a')
++            manifest = pool_fixture(work, alter=alter)
++            report = self.prepare(manifest, work/'windows')
++            self.assertEqual(report['exit_code'], 2)
++            self.assertEqual(report['splits']['train']['ego_history_incomplete_windows'], 18)
++            self.assertEqual(report['splits']['train']['eligible_windows'], 0)
++            self.assertFalse((work/'windows/normalizer.json').exists())
++
++    def test_populated_but_short_split_is_reported_as_incomplete_preparation(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            manifest = pool_fixture(work)
++            report = tool.prepare_windows(manifest, work/'windows')  # Default 41 frames > 7.
++            self.assertEqual(report['exit_code'], 2)
++            self.assertFalse(report['normalizer']['fitted'])
++            self.assertTrue(all(v['episodes_without_eligible_windows'] == v['episodes'] for v in report['splits'].values()))
++            self.assertFalse((work/'windows/normalizer.json').exists())
++
++    def test_forged_audit_does_not_allow_cross_split_parent_ancestry(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            manifest = pool_fixture(work)
++            payload = read_json(manifest)
++            payload['splits']['val'][0]['parent_scenario_id'] = payload['splits']['train'][0]['scenario_id']
++            manifest.write_text(json.dumps(payload), encoding='utf-8')
++            with self.assertRaisesRegex(ValueError, 'ancestry|overlap|leak'):
++                self.prepare(manifest, work/'windows')
++
++    def test_source_hash_change_prevents_normalizer_and_reports_the_file(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            manifest = pool_fixture(work)
++            with (work/'pool/e0.npz').open('ab') as stream:
++                stream.write(b'changed after manifest')
++            report = self.prepare(manifest, work/'windows')
++            self.assertEqual(report['exit_code'], 1)
++            self.assertEqual(len(report['rejected_episodes']), 1)
++            self.assertIn('hash', report['rejected_episodes'][0]['error'].lower())
++            self.assertFalse((work/'windows/normalizer.json').exists())
++
++    def test_loaded_episode_identity_must_match_the_manifest(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            manifest = pool_fixture(work)
++            payload = read_json(manifest)
++            payload['splits']['train'][0]['episode_id'] = 'wrong-episode'
++            manifest.write_text(json.dumps(payload), encoding='utf-8')
++            report = self.prepare(manifest, work/'windows')
++            self.assertEqual(report['exit_code'], 1)
++            self.assertFalse((work/'windows/normalizer.json').exists())
++
++    def test_relocated_pool_uses_relative_paths_and_verifies_hashes(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            manifest = pool_fixture(work)
++            relocated = work/'relocated'
++            shutil.copytree(work/'pool', relocated)
++            payload = read_json(manifest)
++            payload['input_root'] = '/unavailable/old/root'
++            for entries in payload['splits'].values():
++                for entry in entries:
++                    entry['input_source'] = '/unavailable/old/root/'+entry['relative_path']
++            manifest.write_text(json.dumps(payload), encoding='utf-8')
++            report = self.prepare(manifest, work/'windows', input_root=relocated)
++            self.assertEqual(report['exit_code'], 0)
++
++    def test_relative_path_escape_is_rejected(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            manifest = pool_fixture(work)
++            payload = read_json(manifest)
++            payload['splits']['train'][0]['relative_path'] = '../outside.npz'
++            manifest.write_text(json.dumps(payload), encoding='utf-8')
++            with self.assertRaisesRegex(ValueError, 'root|relative|escape'):
++                self.prepare(manifest, work/'windows', input_root=work/'pool')
++
++    def test_duplicate_episode_membership_is_rejected_even_with_passed_audit(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            manifest = pool_fixture(work)
++            payload = read_json(manifest)
++            payload['splits']['val'].append(payload['splits']['train'][0])
++            manifest.write_text(json.dumps(payload), encoding='utf-8')
++            with self.assertRaisesRegex(ValueError, 'duplicate|Duplicate|overlap'):
++                self.prepare(manifest, work/'windows')
++
++    def test_previous_episode_is_released_before_next_load(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            manifest = pool_fixture(work)
++            refs = []
++            original = tool.load_episode
++            def tracked(path):
++                if refs:
++                    self.assertIsNone(refs[-1](), 'Full previous episode retained')
++                episode = original(path)
++                refs.append(weakref.ref(episode))
++                return episode
++            with mock.patch.object(tool, 'load_episode', side_effect=tracked):
++                report = self.prepare(manifest, work/'windows')
++            self.assertEqual(report['exit_code'], 0)
++            self.assertIsNone(refs[-1]())
++
++    def test_change_before_second_pass_cannot_produce_a_stale_normalizer(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            manifest = pool_fixture(work)
++            changed = []
++            def progress(phase, number, total, path, status):
++                if phase == 'normalizer' and number == 0:
++                    with (work/'pool/e0.npz').open('ab') as stream:
++                        stream.write(b'changed between passes')
++                    changed.append(True)
++            report = self.prepare(manifest, work/'windows', progress=progress)
++            self.assertTrue(changed)
++            self.assertEqual(report['exit_code'], 1)
++            self.assertFalse((work/'windows/normalizer.json').exists())
++
++    def test_late_held_out_or_train_changes_prevent_publishing_success(self):
++        for phase_end, episode_id in ((False, 'e5'), (True, 'e0')):
++            with self.subTest(after_last_train_pass=phase_end), tempfile.TemporaryDirectory() as directory:
++                work = Path(directory)
++                manifest = pool_fixture(work)
++                changed = []
++                def progress(phase, number, total, path, status):
++                    trigger = number == total if phase_end else number == 0
++                    if phase == 'normalizer' and trigger:
++                        with (work/('pool/'+episode_id+'.npz')).open('ab') as stream:
++                            stream.write(b'late source mutation')
++                        changed.append(True)
++                report = self.prepare(manifest, work/'windows', progress=progress)
++                self.assertTrue(changed)
++                self.assertEqual(report['exit_code'], 1)
++                self.assertFalse((work/'windows/normalizer.json').exists())
++                self.assertEqual(report['rejected_episodes'][0]['episode_id'], episode_id)
++                self.assertEqual(report['rejected_episodes'][0]['phase'], 'source_check')
++
++    def test_local_rotation_and_wrapped_yaw_statistics_are_finite_and_invertible(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            def alter(i, record):
++                for j, frame in enumerate(record['replay_trajectory']['frames']):
++                    frame['vehicles'][1]['yaw'] = math.pi-.1 if j % 2 else -math.pi+.1
++            manifest = pool_fixture(work, alter=alter)
++            self.prepare(manifest, work/'windows')
++            normalizer = data.ScenarioNormalizer.load(work/'windows/normalizer.json')
++            # Each window has 3 ego yaw=0 values and 5 NPC yaw values near +/-pi.
++            angles = np.array([0.]*9 + [-math.pi+.1, math.pi-.1, -math.pi+.1, math.pi-.1, -math.pi+.1]
++                              + [math.pi-.1, -math.pi+.1, math.pi-.1, -math.pi+.1, math.pi-.1]
++                              + [-math.pi+.1, math.pi-.1, -math.pi+.1, math.pi-.1, -math.pi+.1])
++            mean_yaw = math.atan2(np.sin(angles).mean(), np.cos(angles).mean())
++            residual = np.arctan2(np.sin(angles-mean_yaw), np.cos(angles-mean_yaw))
++            self.assertAlmostEqual(normalizer.mean[4], mean_yaw)
++            self.assertAlmostEqual(normalizer.std[4], residual.std())
++            values = np.array([[3., -4., 2., 0., -math.pi+.1, 0., 4.5, 1.8]])
++            restored = normalizer.inverse_transform(normalizer.transform(values))
++            np.testing.assert_allclose(restored[:, [0, 1, 2, 3, 5, 6, 7]], values[:, [0, 1, 2, 3, 5, 6, 7]])
++            np.testing.assert_allclose(np.sin(restored[:, 4]), np.sin(values[:, 4]))
++
++    def test_existing_output_is_preserved(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            manifest = pool_fixture(work)
++            output = work/'windows'
++            output.mkdir()
++            (output/'keep.txt').write_text('unchanged')
++            with self.assertRaisesRegex(ValueError, 'new|empty'):
++                self.prepare(manifest, output)
++            self.assertEqual((output/'keep.txt').read_text(), 'unchanged')
++
++    def test_cli_emits_progress_and_structured_report(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            manifest = pool_fixture(work)
++            result = subprocess.run([sys.executable, str(ROOT/'embodied/envs/prepare_trajectory_windows.py'),
++                '--manifest', str(manifest), '--output', str(work/'windows'), '--history', '3',
++                '--future', '2', '--dt', '.2', '--progress-every', '2'],
++                stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8')
++            self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
++            self.assertIn('[windows', result.stderr)
++            self.assertIn('[normalizer', result.stderr)
++            report = json.loads(result.stdout)
++            self.assertEqual(report['splits']['train']['eligible_windows'], 18)
++
++
++if __name__ == '__main__':
++    unittest.main()
+diff --git a/docs/trajectory_window_preparation.md b/docs/trajectory_window_preparation.md
+new file mode 100644
+--- /dev/null
++++ b/docs/trajectory_window_preparation.md
+@@ -0,0 +1,91 @@
++# 固定划分下的轨迹窗口检查和 train 归一化
++
++服务器已有 `stage4_dataset_20261026_151923/split_manifest.json`。本工具沿用其成员关系，不重新随机划分窗口。它扫描原始 NPZ，保存合格窗口的轻量索引，并只用 train 拟合自车 anchor 局部坐标的归一化器。无需 SUMO、JAX、GPU 或现有 Dreamer checkpoint。
++
++## 安装和运行
++
++已同步完整新代码时直接运行。使用本次补丁包时，在项目根目录执行：
++
++```bash
++unzip -o trajectory_window_preparation.zip
++patch --dry-run -p1 < trajectory_window_preparation.patch &&
++patch -p1 < trajectory_window_preparation.patch
++python -m unittest discover -s tests
++```
++
++补丁基于上次已安装的统计/划分工具，只修改 `scenario_data.py` 的切窗接口，并新增 CLI、测试和本文档。不改写原始 NPZ、固定划分、训练入口或 checkpoint。
++
++服务器命令：
++
++```bash
++conda activate dreamersafe
++cd /home/ubuntu/zw/dreamer_huifang_10_26_1
++
++RUN="sumo_fpi_log/20261021-105954_osrp_sumo_lag_vector_danger_sumo_None_0"
++SPLIT="$RUN/stage4_dataset_20261026_151923"
++OUT="$RUN/stage4_windows_$(date +%Y%m%d_%H%M%S)"
++
++python -u embodied/envs/prepare_trajectory_windows.py \
++  --manifest "$SPLIT/split_manifest.json" \
++  --output "$OUT" \
++  --history 11 --future 30 --dt 0.2 --stride 1 \
++  --progress-every 25
++```
++
++`[windows N/951]` 是覆盖检查和第一遍统计；`[normalizer N/M]` 是仅对有合格窗口的 train episode 再读一遍，以拟合圆周 yaw 的残差方差。`M` 不包含 val/test。最后 `[source_check N/951]` 再核对所有来源文件的 SHA256，防止文件在前一遍处理后变化。每遍打印开始、第一个、每 25 个和最后一个文件，以及被拒绝文件。每个文件需解压和检查，整个池需要一定时间；进度持续刷新，不会把全池窗口攒到内存中。请使用停止更新的采集池或稳定快照；逐文件复核不能替代文件系统的全目录原子快照。
++
++如采集池整体迁移到其他目录，可以额外传入 `--input-root /实际/posttrain_episode_pool`。工具使用固定清单中的相对路径和 SHA256；不要修改清单来重新分配成员。输出目录必须新建或为空。
++
++## 窗口和目标规则
++
++- `dt=0.2`：沿用本次采集的 5 Hz 时间尺度。`0.19999999999999996` 等原生 dt 只是浮点差异。
++- `history=11`：11 帧历史，包含当前 anchor，从 anchor 前 2 秒到 anchor。
++- `future=30`：anchor 后的 30 帧，即未来 6 秒；第一帧在 anchor+0.2 秒。
++- `stride=1`：相邻窗口移动一帧。窗口有重叠，全部继承其 episode 的固定集合。
++- 自车历史的 8 个字段必须全部有效；自车未来完整性单独统计，不作为输入特征或归一化拟合样本。
++- NPC 的历史和未来共 41 帧必须同时有有效 mask 和有限的 8 维状态，才是该窗口的完整监督目标。一个窗口可以包含多个完整目标；至少一个完整目标才写入窗口索引。
++- 覆盖统计以 anchor 时刻可见的 NPC 为分母，并统计从 anchor 向后连续可用的历史帧数，以及从 anchor+dt 起向前连续可用的未来帧数。不会跨缺车位置补零。
++
++沿用原有重采样规则：源采样缺失时不跨缺车间隔插值；默认不跨超过原生中位采样间隔 1.5 倍的时间间隙。若明确改成更小 `dt`，新增帧属于插值，不等于新增真实采样。工具不会改变原始采样频率。
++
++## 坐标和归一化
++
++每个窗口用自车 **anchor 时刻**的位置和 yaw 建立固定局部坐标，旋转位置、速度和 yaw，保留既有八字段 `(x,y,vx,vy,yaw,a,length,width)`。不会用未来自车位姿改变参考系。位置参考点沿用原始记录；本次真实数据标记为 `front_bumper_center`，这里没有擅自转换为车身中心。来源语义保存在每个 episode 的 `source_provenance` 中。
++
++拟合总体为：每个合格 train 窗口的自车历史，加上该窗口全部完整目标 NPC 的历史和未来。未来 NPC 是训练标签，可用于 train 的统计；val/test 的状态和未来自车均不参与拟合。重叠窗口中的重复状态会重复贡献，这是窗口加权的统计，不是独立真实帧数量。
++
++使用流式稳定总体均值/方差。yaw 用圆周均值，并用包裹到 `[-pi,pi]` 的角度残差计算标准差；接近零的标准差置为 1。归一化器保存为现有 `ScenarioNormalizer` 格式，明确标记 `coordinate_frame=ego-centric`。它不能直接应用于世界坐标轨迹，也不会覆盖旧的世界坐标归一化器。
++
++## 输出与验收
++
++| 文件 | 内容 |
++| --- | --- |
++| `window_report.json` | 每个集合及 episode 的窗口、目标覆盖率计数、连续历史/未来长度直方图、拒绝原因和来源信息 |
++| `window_index.jsonl` | 每行一个合格窗口：集合、源路径/哈希、episode、父场景组、窗口编号、anchor、完整目标车 ID 列表 |
++| `window_dataset_manifest.json` | 原固定清单的哈希、窗口配置、索引哈希、局部坐标约定、归一化器信息和状态 |
++| `normalizer.json` | 仅在准备成功时生成；包含拟合 episode ID、状态计数、均值和标准差 |
++
++`windows_scanned` 是所有可切出的时间窗口数，`eligible_windows` 是自车历史和目标覆盖均合格的窗口数，`complete_target_trajectories` 是合格窗口内的完整目标车轨迹数。后者可以大于窗口数，也不代表独立车辆数或独立场景数。`complete_history_targets` / `complete_future_targets` 分别统计单独满足历史/未来要求的 anchor NPC；完整监督需要同时满足两者。
++
++后续可计算：
++
++```text
++窗口保留率 = eligible_windows / windows_scanned
++完整目标覆盖率 = complete_target_trajectories / anchor_npc_samples
++```
++
++完整目标覆盖率的分子只计自车历史合格的窗口，分母包含所有扫描窗口的 anchor NPC；自车历史缺失时该比率也会下降。完整来源记录不一定产生完整目标窗口。
++
++退出码为 0 时要求：原清单与真实成员的祖先泄漏检查通过，所有来源文件哈希/身份检查通过，所有比例非零的集合都有合格窗口，且 train 归一化器成功拟合。退出码 2 表示输入干净但合格窗口或训练样本不足；退出码 1 表示输入、来源哈希、身份或清单错误。逐 episode 错误会保留有效部分的诊断索引/报告，但不生成可用归一化器。只有 `preparation_exit_code=0` 的数据清单可进入后续训练准备。
++
++后续 loader 必须按索引和固定配置重建窗口、验证源哈希，并只选该行的完整目标 ID。`window_index` 是按本次配置的迭代编号；`start_grid_index` 是重采样后的起始网格位置。不要把编号直接当作原始 NPZ 帧号。当前没有存储模型张量，也没有把目标车的未来或未来自车信息作为条件输入。
++
++这些检查证明记录中的覆盖、身份和分组一致性，不证明轨迹符合物理约束或已经通过 SUMO 实际执行验证。未来可见性用于离线监督筛选，不能作为部署时目标选择的额外已知信息。
++
++## 本地验证
++
++新增 18 项测试覆盖 train-only 拟合、缺失轨迹、固定划分、防伪造泄漏标记、源哈希变化、目录迁移、内存释放、两遍统计间及最后拟合遍之后修改文件、局部坐标和圆周 yaw、CLI 进度及输出保护。还逐字段对照原实现的 136 个窗口，结果一致。完整测试和打包结果见 `trajectory_window_preparation_validation.json`（补丁包附带）。
++
++本地实际上传样本只有一个真实 episode：593 帧、58 个全程 ID。默认配置得到 553 个时间窗口，其中 552 个窗口合格，共 5337 条完整目标轨迹；归一化总体 224889 个窗口加权状态。552 个合格窗口的归一化/反归一化均通过检查，原 NPZ 和固定清单哈希不变。为验证完整流程，该单样本使用明确标记的 train-only 清单；它没有独立验证集/测试集，不能据此声称模型泛化或服务器全池数据质量通过。
++
++服务器 951 个 episode 的具体合格窗口数和分组规模，必须以服务器实际运行报告为准。

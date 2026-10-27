@@ -1,0 +1,32 @@
+# Output directories
+out/
+logs/
+model_ckpt/
+
+# IDE
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Environment
+environment.yml  # 如果这个文件是自动生成的，可以取消注释
+# 如果 environment.yml 是项目必需的，则不要排除它
+
+# Data (如果数据文件很大，考虑排除)
+data/
+datasets/
+
+# Models (模型文件通常很大)
+*.pth
+*.ckpt
+*.pt

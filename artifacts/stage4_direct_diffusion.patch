@@ -1,0 +1,2090 @@
+diff --git a/embodied/envs/trajectory_maps.py b/embodied/envs/trajectory_maps.py
+new file mode 100644
+--- /dev/null
++++ b/embodied/envs/trajectory_maps.py
+@@ -0,0 +1,150 @@
++"""Optional static SUMO geometry, independent of Torch and simulator execution."""
++from pathlib import Path
++from collections import OrderedDict
++import hashlib
++import json
++import xml.etree.ElementTree as ET
++
++import numpy as np
++
++try:
++    from .prepare_trajectory_windows import _hash
++    from .scene_road import RoadEnvelope
++except ImportError:
++    from prepare_trajectory_windows import _hash
++    from scene_road import RoadEnvelope
++
++
++class SumoMapStore:
++    def __init__(self, root=None, max_segments=64, radius=80., cache_size=4):
++        self.root = Path(root).resolve() if root is not None else None
++        self.max_segments, self.radius = max_segments, radius
++        if cache_size < 1:
++            raise ValueError('Map cache size must be positive')
++        self.cache_size = int(cache_size)
++        self._cache = OrderedDict()
++        self._bindings = {}
++
++    def cache_info(self):
++        return {'maps': len(self._cache), 'capacity': self.cache_size}
++
++    def binding_fingerprint(self, source_cfgs):
++        bindings, net_hashes = [], {}
++        for source in sorted(set(s for s in source_cfgs if s)):
++            if source in self._bindings:
++                self._guard_binding(source)
++                frozen = self._bindings[source]
++                bindings.append((source, frozen['cfg_sha256'], frozen['net_sha256']) if frozen else (source, None, None))
++                continue
++            cfg = self.resolve(source)
++            if cfg is None:
++                self._bindings[source] = None
++                bindings.append((source, None, None))
++                continue
++            cfg_signature = self._signature(cfg)
++            cfg_hash = _hash(cfg)
++            node = ET.parse(str(cfg)).getroot().find('./input/net-file')
++            if node is None:
++                raise ValueError('SUMO configuration has no net-file')
++            net = (cfg.parent/node.attrib['value']).resolve()
++            if net not in net_hashes:
++                net_signature = self._signature(net)
++                net_hashes[net] = (_hash(net), net_signature)
++            net_hash, net_signature = net_hashes[net]
++            self._bindings[source] = {'cfg_path': cfg, 'net_path': net, 'cfg_sha256': cfg_hash,
++                 'net_sha256': net_hash, 'cfg_signature': cfg_signature, 'net_signature': net_signature}
++            self._guard_binding(source)
++            bindings.append((source, cfg_hash, net_hash))
++        return hashlib.sha256(json.dumps(bindings, sort_keys=True).encode()).hexdigest()
++
++    @staticmethod
++    def _signature(path):
++        stat = path.stat()
++        return stat.st_size, stat.st_mtime_ns, stat.st_ino
++
++    def _guard_binding(self, source):
++        if not source:
++            return None
++        if source not in self._bindings:
++            self.binding_fingerprint([source])
++        binding = self._bindings[source]
++        current = self.resolve(source)
++        if binding is None:
++            if current is not None:
++                raise ValueError('Previously missing map binding changed')
++            return None
++        if (current != binding['cfg_path'] or self._signature(binding['cfg_path']) != binding['cfg_signature']
++                or self._signature(binding['net_path']) != binding['net_signature']):
++            raise ValueError('SUMO map changed after its binding hash was frozen')
++        return binding
++
++    def resolve(self, source_cfg):
++        if not source_cfg:
++            return None
++        original = Path(source_cfg)
++        candidates = ([self.root/original.name] if self.root else []) + [original]
++        return next((p.resolve() for p in candidates if p.is_file()), None)
++
++    def load(self, source_cfg):
++        binding = self._guard_binding(source_cfg)
++        if binding is None:
++            return None
++        cfg = binding['cfg_path']
++        if cfg in self._cache:
++            result = self._cache.pop(cfg)
++            self._cache[cfg] = result
++            return result
++        node = ET.parse(str(cfg)).getroot().find('./input/net-file')
++        if node is None:
++            raise ValueError('SUMO configuration has no net-file')
++        net_path = (cfg.parent/node.attrib['value']).resolve()
++        net = ET.parse(str(net_path)).getroot()
++        starts, ends, widths, speeds = [], [], [], []
++        for lane in net.iter('lane'):
++            allow, deny = lane.get('allow', '').split(), lane.get('disallow', '').split()
++            if 'passenger' in deny or 'all' in deny or (allow and 'passenger' not in allow and 'all' not in allow):
++                continue
++            points = np.array([[float(v) for v in p.split(',')[:2]] for p in lane.get('shape', '').split()])
++            width, speed = float(lane.get('width', '3.2')), float(lane.get('speed', '0'))
++            if width <= 0 or speed < 0 or not np.isfinite([width, speed]).all():
++                raise ValueError('Invalid SUMO lane width/speed')
++            for a, b in zip(points[:-1], points[1:]):
++                if not np.isfinite([a, b]).all():
++                    raise ValueError('Nonfinite SUMO lane geometry')
++                if np.linalg.norm(a-b) > 1e-9:
++                    starts.append(a); ends.append(b); widths.append(width); speeds.append(speed)
++        if not starts:
++            raise ValueError('SUMO map has no passenger lane segments')
++        polygons = [np.array([[float(v) for v in p.split(',')[:2]] for p in n.get('shape', '').split()])
++                    for n in net.iter('junction') if len(n.get('shape', '').split()) >= 3]
++        road = RoadEnvelope(np.asarray(starts), np.asarray(ends), np.asarray(widths), polygons,
++                            'sumo_lane_buffers_and_junction_polygons', max(speeds), np.asarray(speeds))
++        self._guard_binding(source_cfg)
++        provenance = {'cfg_path': str(cfg), 'cfg_sha256': binding['cfg_sha256'], 'net_path': str(net_path),
++                      'net_sha256': binding['net_sha256'], 'identity_verified_against_recording': False,
++                      'feature_units': 'endpoints/50m, width/5m, speed_limit/30m_per_s'}
++        self._cache[cfg] = (road, provenance)
++        while len(self._cache) > self.cache_size:
++            self._cache.popitem(last=False)
++        return road, provenance
++
++    def features(self, source_cfg, anchor):
++        values = np.zeros((self.max_segments, 6), dtype=np.float32)
++        mask = np.zeros(self.max_segments, dtype=bool)
++        loaded = self.load(source_cfg)
++        if loaded is None:
++            return values, mask, {'available': False, 'reason': 'missing_map_binding'}
++        road, provenance = loaded
++        centers = (road.starts+road.ends)*.5
++        distance = np.linalg.norm(centers-anchor[:2], axis=-1)
++        eligible = np.flatnonzero(distance <= self.radius + np.linalg.norm(road.ends-road.starts, axis=-1)*.5)
++        selected = eligible[np.argsort(distance[eligible], kind='stable')[:self.max_segments]]
++        c, s = np.cos(anchor[4]), np.sin(anchor[4])
++        rotation = np.array([[c, -s], [s, c]])
++        n = len(selected)
++        values[:n, :2] = ((road.starts[selected]-anchor[:2])@rotation)/50.
++        values[:n, 2:4] = ((road.ends[selected]-anchor[:2])@rotation)/50.
++        values[:n, 4] = road.widths[selected]/5.
++        values[:n, 5] = road.segment_speeds[selected]/30.
++        mask[:n] = True
++        return values, mask, dict(provenance, available=bool(n))
+diff --git a/embodied/envs/trajectory_dataset.py b/embodied/envs/trajectory_dataset.py
+new file mode 100644
+--- /dev/null
++++ b/embodied/envs/trajectory_dataset.py
+@@ -0,0 +1,305 @@
++"""NumPy-only frozen-window loader; condition dictionaries contain history only."""
++from __future__ import annotations
++
++import argparse
++from collections import OrderedDict
++import hashlib
++import json
++from pathlib import Path
++import sys
++from types import SimpleNamespace
++
++import numpy as np
++
++try:
++    from .scenario_data import ScenarioNormalizer, VEHICLE_FIELDS, _resample_states, to_ego_centric
++    from .prepare_trajectory_windows import FIT_SCOPE, _hash, _read_manifest, _load_checked, _check_unchanged
++    from .trajectory_maps import SumoMapStore
++except ImportError:
++    from scenario_data import ScenarioNormalizer, VEHICLE_FIELDS, _resample_states, to_ego_centric
++    from prepare_trajectory_windows import FIT_SCOPE, _hash, _read_manifest, _load_checked, _check_unchanged
++    from trajectory_maps import SumoMapStore
++
++
++def _json(path):
++    return json.loads(Path(path).read_text(encoding='utf-8'))
++
++
++class TrajectoryDataset:
++    def __init__(self, dataset_manifest, split, input_root=None, split_manifest=None,
++                 max_neighbors=8, cache_size=2, limit=None, seed=0, map_root=None):
++        if split not in ('train', 'val', 'test'):
++            raise ValueError('Unknown dataset split')
++        if max_neighbors < 0 or cache_size < 1 or (limit is not None and limit < 1):
++            raise ValueError('Invalid neighbors/cache/limit')
++        self.manifest_path = Path(dataset_manifest).resolve()
++        self.manifest = _json(self.manifest_path)
++        payload = self.manifest
++        if (payload.get('artifact_type') != 'trajectory_window_dataset' or payload.get('schema_version') != 1
++                or payload.get('preparation_exit_code') != 0 or payload.get('coordinate_frame') != 'ego-centric'
++                or tuple(payload.get('vehicle_fields', ())) != VEHICLE_FIELDS):
++            raise ValueError('Expected a successful ego-centric trajectory window dataset')
++        self.config = payload['window_config']
++        for key in ('history', 'future', 'stride'):
++            if isinstance(self.config[key], bool) or not isinstance(self.config[key], int) or self.config[key] < 1:
++                raise ValueError('Invalid window configuration')
++        if not np.isfinite(self.config['dt']) or self.config['dt'] <= 0:
++            raise ValueError('Invalid dt')
++        frozen_path = Path(split_manifest or payload['source_manifest_path']).resolve()
++        if _hash(frozen_path) != payload['source_manifest_sha256']:
++            raise ValueError('Frozen split manifest hash mismatch; supply the original manifest')
++        _, entries, root, _, self.audit = _read_manifest(frozen_path, input_root)
++        self.entries = {e['episode_id']: e for e in entries}
++        self.input_root = root
++        self.index_path = self.manifest_path.parent/'window_index.jsonl'
++        if not self.index_path.is_file():
++            self.index_path = Path(payload['index_path'])
++        if _hash(self.index_path) != payload['index_sha256']:
++            raise ValueError('Window index hash mismatch')
++        index_stat = self.index_path.stat()
++        self._index_signature = (index_stat.st_size, index_stat.st_mtime_ns, index_stat.st_ino)
++        normalizer_path = self.manifest_path.parent/'normalizer.json'
++        if not normalizer_path.is_file():
++            normalizer_path = Path(payload['normalizer']['path'])
++        self.normalizer = ScenarioNormalizer.load(normalizer_path)
++        normalizer = self.normalizer
++        train_ids = set(e['episode_id'] for e in entries if e['split'] == 'train')
++        if (not payload['normalizer']['fitted'] or normalizer.coordinate_frame != 'ego-centric'
++                or normalizer.normalizer_id != payload['normalizer']['normalizer_id']
++                or set(normalizer.training_episode_ids) != set(payload['normalizer']['training_episode_ids'])
++                or not set(normalizer.training_episode_ids) <= train_ids
++                or normalizer.count != payload['normalizer']['training_state_count']):
++            raise ValueError('Normalizer identity/training population mismatch')
++        identity = json.dumps({'config': self.config, 'coordinate_frame': 'ego-centric', 'fit_scope': FIT_SCOPE,
++                   'mean': normalizer.mean.tolist(), 'std': normalizer.std.tolist(), 'count': normalizer.count,
++                   'training_sources': sorted((i, self.entries[i]['input_sha256']) for i in normalizer.training_episode_ids)},
++                   sort_keys=True, allow_nan=False)
++        expected = 'normalizer-'+hashlib.sha256(identity.encode('utf-8')).hexdigest()[:20]
++        if normalizer.normalizer_id != expected:
++            raise ValueError('Normalizer parameters do not match their frozen identity')
++        self.split, self.max_neighbors, self.cache_size = split, int(max_neighbors), int(cache_size)
++        self.seed, self.epoch = int(seed), 0
++        self._cache, self._loads = OrderedDict(), 0
++        self.maps = SumoMapStore(map_root)
++        self.offsets, self.episode_indices = [], OrderedDict()
++        observed = dict.fromkeys(('train', 'val', 'test'), 0)
++        with self.index_path.open('rb') as stream:
++            while True:
++                offset = stream.tell()
++                line = stream.readline()
++                if not line:
++                    break
++                row = json.loads(line)
++                self._validate_row(row)
++                observed[row['split']] += 1
++                if row['split'] == split and (limit is None or len(self.offsets) < limit):
++                    self.episode_indices.setdefault(row['episode_id'], []).append(len(self.offsets))
++                    self.offsets.append(offset)
++        if observed != payload['split_window_counts']:
++            raise ValueError('Window index counts contradict its manifest')
++        self._check_index()
++        if _hash(self.index_path) != payload['index_sha256']:
++            raise ValueError('Window index changed during construction')
++        self.offsets = np.asarray(self.offsets, dtype=np.int64)
++        self.episode_indices = {k: np.asarray(v, dtype=np.int64) for k, v in self.episode_indices.items()}
++        self.fingerprint = {'window_manifest_sha256': _hash(self.manifest_path),
++                            'split_manifest_sha256': payload['source_manifest_sha256'],
++                            'index_sha256': payload['index_sha256'], 'normalizer_id': normalizer.normalizer_id,
++                            'window_config': dict(self.config), 'coordinate_frame': 'ego-centric',
++                            'map_binding_sha256': self.maps.binding_fingerprint(e.get('source_cfg') for e in entries)}
++
++    def _validate_row(self, row):
++        entry = self.entries.get(row.get('episode_id'))
++        if entry is None:
++            raise ValueError('Window index contains an unknown episode')
++        for key in ('split', 'scenario_id', 'parent_group_id', 'relative_path', 'input_sha256'):
++            if row.get(key) != entry[key]:
++                raise ValueError('Window member contradicts frozen split: '+key)
++        for key in ('window_index', 'start_grid_index'):
++            if isinstance(row.get(key), bool) or not isinstance(row.get(key), int) or row[key] < 0:
++                raise ValueError('Invalid window grid index')
++        if row['start_grid_index'] != row['window_index']*self.config['stride']:
++            raise ValueError('Window stride/grid identity mismatch')
++        ids = row.get('eligible_target_ids')
++        if (not isinstance(ids, list) or not ids or any(not isinstance(i, str) for i in ids)
++                or len(set(ids)) != len(ids) or not np.isfinite(row['anchor_timestamp'])):
++            raise ValueError('Invalid complete target list or anchor')
++
++    def __len__(self):
++        return len(self.offsets)
++
++    def set_epoch(self, epoch):
++        self.epoch = int(epoch)
++
++    def __getstate__(self):
++        state = self.__dict__.copy()
++        state['_cache'] = OrderedDict()
++        state['_loads'] = 0
++        return state
++
++    def cache_info(self):
++        return {'episodes': len(self._cache), 'capacity': self.cache_size, 'loads': self._loads}
++
++    def row(self, index):
++        self._check_index()
++        with self.index_path.open('rb') as stream:
++            stream.seek(int(self.offsets[index]))
++            row = json.loads(stream.readline())
++        self._check_index()
++        self._validate_row(row)
++        if row['split'] != self.split:
++            raise ValueError('Selected index row belongs to another split')
++        return row
++
++    def _check_index(self):
++        stat = self.index_path.stat()
++        if (stat.st_size, stat.st_mtime_ns, stat.st_ino) != self._index_signature:
++            raise ValueError('Window index changed after its hash was verified')
++
++    def _grid(self, episode_id):
++        entry = self.entries[episode_id]
++        if episode_id in self._cache:
++            grid = self._cache.pop(episode_id)
++            stat = Path(entry['resolved_source']).stat()
++            if (stat.st_size, stat.st_mtime_ns) != grid.fingerprint:
++                raise ValueError('Source changed after episode was cached')
++            self._cache[episode_id] = grid
++            return grid
++        episode, fingerprint = _load_checked(entry)
++        dt = self.config['dt']
++        times = episode.timestamps
++        if len(times) < 2:
++            raise ValueError('Window source needs at least two timestamps')
++        count = int(np.floor((times[-1]-times[0])/dt+1e-8))+1
++        target = times[0]+np.arange(count)*dt
++        max_gap = 1.5*float(np.median(np.diff(times)))
++        ego, emask = _resample_states(times, episode.ego_state, episode.ego_valid_mask, target, max_gap)
++        npcs, nmask = _resample_states(times, episode.npc_states, episode.npc_valid_mask, target, max_gap)
++        grid = SimpleNamespace(times=target, ego=ego, ego_mask=emask, npcs=npcs, npc_mask=nmask,
++                    npc_ids=episode.npc_ids, metadata=episode.metadata, source_cfg=episode.source_cfg,
++                    fingerprint=fingerprint, scenario_id=episode.scenario_id)
++        _check_unchanged(entry, fingerprint)
++        self._cache[episode_id] = grid
++        self._loads += 1
++        while len(self._cache) > self.cache_size:
++            self._cache.popitem(last=False)
++        return grid
++
++    def __getitem__(self, index):
++        row = self.row(index)
++        grid = self._grid(row['episode_id'])
++        h, f = self.config['history'], self.config['future']
++        start, stop = row['start_grid_index'], row['start_grid_index']+h+f
++        anchor_index = start+h-1
++        if stop > len(grid.times) or not np.isclose(grid.times[anchor_index], row['anchor_timestamp'], rtol=0, atol=1e-7):
++            raise ValueError('Window index/timestamp no longer matches source')
++        anchor = grid.ego[anchor_index].copy()
++        ego_history = to_ego_centric(grid.ego[start:start+h], anchor)
++        states = to_ego_centric(grid.npcs[start:stop], anchor)
++        masks = grid.npc_mask[start:stop] & np.isfinite(states).all(axis=-1)
++        emask = grid.ego_mask[start:start+h] & np.isfinite(ego_history).all(axis=-1)
++        complete = [grid.npc_ids[i] for i in np.flatnonzero(masks.all(axis=0))]
++        if not emask.all() or set(complete) != set(row['eligible_target_ids']):
++            raise ValueError('Frozen target/ego eligibility contradicts loaded data')
++        eligible = [grid.npc_ids.index(i) for i in row['eligible_target_ids']]
++        if self.split == 'train':
++            token = '%d:%d:%d:%s' % (self.seed, self.epoch, int(self.offsets[index]), row['episode_id'])
++            choice = int.from_bytes(hashlib.sha256(token.encode()).digest()[:8], 'little') % len(eligible)
++            selected = eligible[choice]
++        else:
++            selected = min(eligible, key=lambda i: (float(np.linalg.norm(states[h-1, i, :2])), grid.npc_ids[i]))
++        # Other vehicles are selected using anchor/history only, never future.
++        neighbors = [i for i in range(len(grid.npc_ids)) if i != selected and masks[h-1, i]]
++        neighbors.sort(key=lambda i: (float(np.linalg.norm(states[h-1, i, :2])), grid.npc_ids[i]))
++        neighbors = neighbors[:self.max_neighbors]
++        neighbor_values = np.zeros((h, self.max_neighbors, 8), dtype=np.float32)
++        neighbor_mask = np.zeros((h, self.max_neighbors), dtype=bool)
++        if neighbors:
++            neighbor_mask[:, :len(neighbors)] = masks[:h, neighbors]
++            normalized = self.normalizer.transform(states[:h, neighbors], masks[:h, neighbors])
++            neighbor_values[:, :len(neighbors)] = np.where(masks[:h, neighbors, None], normalized, 0.)
++        map_values, map_mask, map_source = self.maps.features(grid.source_cfg, anchor)
++        scene_type = {'merge': 1, 'cut_in': 2, 'keep_lane': 3}.get(grid.metadata.get('scenario_type'), 0)
++        condition = {'ego_history': self.normalizer.transform(ego_history).astype(np.float32),
++                     'ego_mask': emask.copy(),
++                     'target_history': self.normalizer.transform(states[:h, selected]).astype(np.float32),
++                     'target_mask': masks[:h, selected].copy(),
++                     'neighbor_history': neighbor_values, 'neighbor_mask': neighbor_mask,
++                     'map_segments': map_values, 'map_mask': map_mask,
++                     'scene_type': np.asarray(scene_type, dtype=np.int64)}
++        label = (states[h:, selected, :2]-self.normalizer.mean[:2])/self.normalizer.std[:2]
++        metadata = {'dataset_index': int(index), 'episode_id': row['episode_id'], 'scenario_id': row['scenario_id'],
++                    'parent_group_id': row['parent_group_id'], 'target_id': grid.npc_ids[selected],
++                    'source_sha256': row['input_sha256'], 'source_path': self.entries[row['episode_id']]['resolved_source'],
++                    'window_index': row['window_index'], 'anchor_timestamp': row['anchor_timestamp'],
++                    'world_anchor': anchor, 'target_anchor_world': grid.npcs[anchor_index, selected].copy(),
++                    'target_anchor_local': states[h-1, selected].copy(),
++                    'target_history_world': grid.npcs[start:start+h, selected].copy(),
++                    'ego_history_world': grid.ego[start:start+h].copy(),
++                    'position_reference': grid.metadata.get('position_reference'),
++                    'source_cfg': grid.source_cfg, 'map_source': map_source, 'split': self.split}
++        return {'condition': condition, 'future_xy': label.astype(np.float32),
++                'future_mask': masks[h:, selected].copy(), 'meta': metadata}
++
++    def xy_to_world(self, normalized, meta):
++        local = np.asarray(normalized)*self.normalizer.std[:2]+self.normalizer.mean[:2]
++        anchor = meta['world_anchor']
++        c, s = np.cos(anchor[4]), np.sin(anchor[4])
++        return local@np.array([[c, s], [-s, c]])+anchor[:2]
++
++
++class EpisodeSampler:
++    """Shuffle within episodes and between episodes while retaining cache locality."""
++    def __init__(self, dataset, seed=0):
++        self.dataset, self.seed = dataset, int(seed)
++
++    def __len__(self):
++        return len(self.dataset)
++
++    def __iter__(self):
++        rng = np.random.RandomState((self.seed+self.dataset.epoch) % (2**32))
++        groups = list(self.dataset.episode_indices.values())
++        for i in rng.permutation(len(groups)):
++            for index in rng.permutation(groups[i]):
++                yield int(index)
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('--dataset-manifest', required=True)
++    parser.add_argument('--split', choices=('train', 'val', 'test'), default='train')
++    parser.add_argument('--input-root')
++    parser.add_argument('--split-manifest')
++    parser.add_argument('--map-root')
++    parser.add_argument('--inspect', type=int, default=16)
++    parser.add_argument('--max-neighbors', type=int, default=8)
++    args = parser.parse_args(argv)
++    try:
++        if args.inspect < 1:
++            raise ValueError('--inspect must be positive')
++        dataset = TrajectoryDataset(args.dataset_manifest, args.split, input_root=args.input_root,
++                    split_manifest=args.split_manifest, max_neighbors=args.max_neighbors, map_root=args.map_root)
++        if not len(dataset):
++            raise ValueError('Requested split has no windows')
++        count = min(args.inspect, len(dataset))
++        samples = [dataset[i] for i in range(count)]
++        error = max(float(np.max(np.abs(dataset.xy_to_world(s['future_xy'], s['meta'])-
++                    (dataset._grid(s['meta']['episode_id']).npcs[
++                     dataset.row(i)['start_grid_index']+dataset.config['history']:
++                     dataset.row(i)['start_grid_index']+dataset.config['history']+dataset.config['future'],
++                     dataset._grid(s['meta']['episode_id']).npc_ids.index(s['meta']['target_id']), :2]))))
++                    for i, s in enumerate(samples))
++        report = {'exit_code': 0, 'split': args.split, 'split_windows': len(dataset), 'inspected_windows': count,
++                  'window_config': dataset.config, 'label_shape': list(samples[0]['future_xy'].shape),
++                  'condition_shapes': {k: list(v.shape) for k, v in samples[0]['condition'].items()},
++                  'finite_conditions': all(np.isfinite(v).all() for s in samples for v in s['condition'].values()),
++                  'max_world_roundtrip_error_m': error, 'cache': dataset.cache_info(),
++                  'fingerprint': dataset.fingerprint, 'training_performed': False}
++    except (ValueError, TypeError, KeyError, OSError) as error:
++        report = {'exit_code': 1, 'error': str(error)}
++    print(json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False))
++    return report['exit_code']
++
++
++if __name__ == '__main__':
++    sys.exit(main())
+diff --git a/embodied/envs/trajectory_denoiser.py b/embodied/envs/trajectory_denoiser.py
+new file mode 100644
+--- /dev/null
++++ b/embodied/envs/trajectory_denoiser.py
+@@ -0,0 +1,136 @@
++"""Direct-trajectory adaptation of uploaded DiffScene temporal/context blocks.
++
++Reference: diffscene-main/models/temporal.py and models/helpers.py. The uploaded
++stride-one temporal hierarchy is retained; no nuScenes/CVAE/PyG dependencies.
++"""
++import math
++
++import torch
++from torch import nn
++
++
++def _mlp(inp, out):
++    return nn.Sequential(nn.Linear(inp, out), nn.Mish(), nn.Linear(out, out))
++
++
++class ConditionEncoder(nn.Module):
++    def __init__(self, history, condition_dim, mean, std):
++        super().__init__()
++        self.history = history
++        self.register_buffer('state_mean', torch.as_tensor(mean, dtype=torch.float32))
++        self.register_buffer('state_std', torch.as_tensor(std, dtype=torch.float32))
++        self.vehicle = _mlp(history*10, condition_dim)  # 9 derived fields + visibility.
++        self.map_encoder = _mlp(6, condition_dim)
++        self.missing_map = nn.Parameter(torch.zeros(condition_dim))
++        self.scene_type = nn.Embedding(4, 8)
++        self.combine = _mlp(4*condition_dim+8, condition_dim)
++
++    def _vehicle(self, states, mask):
++        mask = mask.bool()
++        if states.shape[-2:] != (self.history, 8) or tuple(mask.shape) != tuple(states.shape[:-1]):
++            raise ValueError('Historical state/mask shape mismatch')
++        if not torch.isfinite(states[mask]).all():
++            raise ValueError('Nonfinite active historical state')
++        safe = torch.where(mask[..., None], states, torch.zeros_like(states))
++        yaw = safe[..., 4:5]*self.state_std[4]+self.state_mean[4]
++        features = torch.cat((safe[..., :4], torch.sin(yaw), torch.cos(yaw), safe[..., 5:]), dim=-1)
++        features = torch.where(mask[..., None], features, torch.zeros_like(features))
++        features = torch.cat((features, mask[..., None].to(features.dtype)), dim=-1)
++        return self.vehicle(features.flatten(-2))
++
++    def forward(self, condition):
++        ego = self._vehicle(condition['ego_history'], condition['ego_mask'])
++        target = self._vehicle(condition['target_history'], condition['target_mask'])
++        values = condition['neighbor_history'].permute(0, 2, 1, 3)
++        masks = condition['neighbor_mask'].permute(0, 2, 1).bool()
++        if values.shape[1]:
++            neighbors = self._vehicle(values, masks)
++            visible = masks.any(dim=-1)
++            neighbors = torch.where(visible[..., None], neighbors, torch.zeros_like(neighbors))
++            neighbor = neighbors.sum(dim=1)/visible.sum(dim=1, keepdim=True).clamp(min=1)
++        else:
++            neighbor = torch.zeros_like(ego)
++        map_mask = condition['map_mask'].bool()
++        segments = condition['map_segments']
++        if not torch.isfinite(segments[map_mask]).all():
++            raise ValueError('Nonfinite active map segment')
++        safe_map = torch.where(map_mask[..., None], segments, torch.zeros_like(segments))
++        encoded = self.map_encoder(safe_map)
++        encoded = torch.where(map_mask[..., None], encoded, torch.zeros_like(encoded))
++        map_feature = encoded.sum(dim=1)/map_mask.sum(dim=1, keepdim=True).clamp(min=1)
++        map_feature = torch.where(map_mask.any(dim=1, keepdim=True), map_feature, self.missing_map[None])
++        scene = condition['scene_type'].long()
++        if torch.any((scene < 0)|(scene >= 4)):
++            raise ValueError('Unknown scene-type token')
++        return self.combine(torch.cat((ego, target, neighbor, map_feature, self.scene_type(scene)), dim=-1))
++
++
++class SinusoidalTime(nn.Module):
++    def __init__(self, dim):
++        super().__init__()
++        if dim < 4 or dim % 2:
++            raise ValueError('Time embedding width must be even and >=4')
++        self.register_buffer('frequency', torch.exp(torch.arange(dim//2)*(-math.log(10000)/(dim//2-1))))
++
++    def forward(self, time):
++        phase = time[:, None]*self.frequency[None]
++        return torch.cat((phase.sin(), phase.cos()), dim=-1)
++
++
++def _conv(inp, out):
++    return nn.Sequential(nn.Conv1d(inp, out, 5, padding=2), nn.GroupNorm(math.gcd(8, out), out), nn.Mish())
++
++
++class ResidualTemporalBlock(nn.Module):
++    def __init__(self, inp, out, time_dim, condition_dim):
++        super().__init__()
++        self.first, self.second = _conv(inp, out), _conv(out, out)
++        self.context = nn.Sequential(nn.Mish(), nn.Linear(time_dim+condition_dim, out))
++        self.residual = nn.Conv1d(inp, out, 1) if inp != out else nn.Identity()
++
++    def forward(self, x, condition, time):
++        h = self.first(x)+self.context(torch.cat((time, condition), dim=-1))[..., None]
++        return self.second(h)+self.residual(x)
++
++
++class ConditionalTrajectoryDenoiser(nn.Module):
++    def __init__(self, config, normalizer):
++        super().__init__()
++        self.future = int(config['future'])
++        dim, cond = int(config.get('base_dim', 32)), int(config.get('condition_dim', 64))
++        multipliers = config.get('dim_mults', [1, 2, 4])
++        if dim < 4 or dim % 2 or cond < 1 or not multipliers or any(m < 1 for m in multipliers):
++            raise ValueError('Invalid temporal network dimensions')
++        self.condition_encoder = ConditionEncoder(int(config['history']), cond, normalizer['mean'], normalizer['std'])
++        self.time = nn.Sequential(SinusoidalTime(dim), nn.Linear(dim, dim*4), nn.Mish(), nn.Linear(dim*4, dim))
++        widths = [2]+[dim*int(m) for m in multipliers]
++        self.downs, self.ups = nn.ModuleList(), nn.ModuleList()
++        for i, (inp, out) in enumerate(zip(widths[:-1], widths[1:])):
++            self.downs.append(nn.ModuleList([ResidualTemporalBlock(inp, out, dim, cond),
++                ResidualTemporalBlock(out, out, dim, cond),
++                nn.Conv1d(out, out, 3, padding=1) if i < len(multipliers)-1 else nn.Identity()]))
++        self.mid1, self.mid2 = (ResidualTemporalBlock(widths[-1], widths[-1], dim, cond) for _ in range(2))
++        for inp, out in reversed(list(zip(widths[:-1], widths[1:]))[1:]):
++            self.ups.append(nn.ModuleList([ResidualTemporalBlock(2*out, inp, dim, cond),
++                ResidualTemporalBlock(inp, inp, dim, cond), nn.ConvTranspose1d(inp, inp, 3, stride=1, padding=1)]))
++        self.final = nn.Sequential(_conv(widths[1], dim), nn.Conv1d(dim, 2, 1))
++
++    def encode_condition(self, condition):
++        return self.condition_encoder(condition)
++
++    def predict_noise(self, noisy, time, context):
++        if noisy.ndim != 3 or tuple(noisy.shape[1:]) != (self.future, 2) or time.shape != noisy.shape[:1]:
++            raise ValueError('Expected noisy [B,F,2] and timestep [B]')
++        x, t, skips = noisy.transpose(1, 2), self.time(time), []
++        for first, second, conv in self.downs:
++            x = second(first(x, context, t), context, t)
++            skips.append(x)
++            x = conv(x)
++        x = self.mid2(self.mid1(x, context, t), context, t)
++        for first, second, conv in self.ups:
++            x = torch.cat((x, skips.pop()), dim=1)
++            x = conv(second(first(x, context, t), context, t))
++        return self.final(x).transpose(1, 2)
++
++    def forward(self, noisy, time, condition):
++        return self.predict_noise(noisy, time, self.encode_condition(condition))
+diff --git a/embodied/envs/trajectory_diffusion.py b/embodied/envs/trajectory_diffusion.py
+new file mode 100644
+--- /dev/null
++++ b/embodied/envs/trajectory_diffusion.py
+@@ -0,0 +1,134 @@
++"""Zero-based DDPM noise prediction and actual DDIM skipping for direct x/y."""
++import math
++
++import torch
++from torch import nn
++
++try:
++    from .trajectory_denoiser import ConditionalTrajectoryDenoiser
++except ImportError:
++    from trajectory_denoiser import ConditionalTrajectoryDenoiser
++
++
++def _extract(values, time, shape):
++    return values[time].reshape(len(time), *([1]*(len(shape)-1)))
++
++
++class TrajectoryDiffusion(nn.Module):
++    def __init__(self, denoiser, config):
++        super().__init__()
++        self.denoiser, self.config = denoiser, dict(config)
++        self.num_steps, self.future = int(config.get('diffusion_steps', 100)), int(config['future'])
++        if self.num_steps < 2:
++            raise ValueError('At least two diffusion steps required')
++        schedule = config.get('beta_schedule', 'cosine')
++        if schedule == 'linear':
++            betas = torch.linspace(config.get('beta_start', 1e-4), config.get('beta_end', .02), self.num_steps, dtype=torch.float64)
++        elif schedule == 'cosine':
++            time = torch.arange(self.num_steps+1, dtype=torch.float64)/self.num_steps
++            abar = torch.cos((time+.008)/1.008*math.pi/2)**2
++            abar = abar/abar[0]
++            betas = (1-abar[1:]/abar[:-1]).clamp(max=.999)
++        else:
++            raise ValueError('Unknown beta schedule')
++        if not torch.isfinite(betas).all() or torch.any((betas <= 0)|(betas >= 1)):
++            raise ValueError('Invalid beta schedule')
++        alphas = 1-betas
++        bars = torch.cumprod(alphas, dim=0)
++        prev = torch.cat((torch.ones(1, dtype=bars.dtype), bars[:-1]))
++        for key, values in {'betas': betas, 'alphas': alphas, 'alpha_bars': bars,
++            'posterior_variance': betas*(1-prev)/(1-bars),
++            'posterior_c1': betas*torch.sqrt(prev)/(1-bars),
++            'posterior_c2': torch.sqrt(alphas)*(1-prev)/(1-bars)}.items():
++            self.register_buffer(key, values.float())
++
++    def q_sample(self, start, time, noise=None):
++        if time.dtype != torch.long or torch.any((time < 0)|(time >= self.num_steps)):
++            raise ValueError('Diffusion timestep outside zero-based schedule')
++        noise = torch.randn_like(start) if noise is None else noise
++        bars = _extract(self.alpha_bars, time, start.shape)
++        return bars.sqrt()*start+(1-bars).sqrt()*noise
++
++    def q_posterior(self, start, noisy, time):
++        return (_extract(self.posterior_c1, time, noisy.shape)*start+
++                _extract(self.posterior_c2, time, noisy.shape)*noisy,
++                _extract(self.posterior_variance, time, noisy.shape))
++
++    def training_loss(self, condition, future_xy, future_mask=None, t=None, noise=None):
++        if future_xy.ndim != 3 or tuple(future_xy.shape[1:]) != (self.future, 2):
++            raise ValueError('Future labels must be [B,F,2]')
++        mask = torch.ones_like(future_xy[..., 0], dtype=torch.bool) if future_mask is None else future_mask.bool()
++        if tuple(mask.shape) != tuple(future_xy.shape[:-1]) or not mask.any():
++            raise ValueError('A valid future mask is required')
++        if not torch.isfinite(future_xy[mask]).all():
++            raise ValueError('Nonfinite active future label')
++        start = torch.where(mask[..., None], future_xy, torch.zeros_like(future_xy))
++        t = torch.randint(self.num_steps, (len(start),), device=start.device) if t is None else t
++        noise = torch.randn_like(start) if noise is None else noise
++        prediction = self.denoiser(self.q_sample(start, t, noise), t, condition)
++        squared = (prediction-noise)**2
++        return torch.where(mask[..., None], squared, torch.zeros_like(squared)).sum()/(mask.sum()*2)
++
++    @torch.no_grad()
++    def sample(self, condition, num_samples=1, method='ddim', steps=None, seed=0, eta=0.):
++        steps = self.num_steps if steps is None else int(steps)
++        if num_samples < 1 or steps < 1 or steps > self.num_steps or eta < 0 or eta > 1:
++            raise ValueError('Invalid sampling count/steps/eta')
++        if method not in ('ddpm', 'ddim') or (method == 'ddpm' and steps != self.num_steps):
++            raise ValueError('DDPM requires every diffusion step; use DDIM for skipping')
++        training = self.training
++        self.eval()
++        try:
++            context = self.denoiser.encode_condition(condition)
++            batch = len(context)
++            context = context.repeat_interleave(num_samples, dim=0)
++            generator = torch.Generator(device=context.device).manual_seed(int(seed))
++            shape = (batch*num_samples, self.future, 2)
++            x = torch.randn(shape, device=context.device, dtype=context.dtype, generator=generator)
++            times = (list(range(self.num_steps-1, -1, -1)) if method == 'ddpm' else
++                     torch.linspace(self.num_steps-1, 0, steps).round().long().tolist())
++            for i, current in enumerate(times):
++                t = torch.full((len(x),), current, device=x.device, dtype=torch.long)
++                epsilon = self.denoiser.predict_noise(x, t, context)
++                bar = self.alpha_bars[current]
++                start = (x-torch.sqrt(1-bar)*epsilon)/torch.sqrt(bar)
++                if method == 'ddpm':
++                    mean, variance = self.q_posterior(start, x, t)
++                    x = mean
++                    if current:
++                        x = x+variance.sqrt()*torch.randn(shape, device=x.device, dtype=x.dtype, generator=generator)
++                else:
++                    previous = times[i+1] if i+1 < len(times) else -1
++                    prev_bar = self.alpha_bars[previous] if previous >= 0 else torch.ones_like(bar)
++                    sigma = eta*torch.sqrt(((1-prev_bar)/(1-bar)*(1-bar/prev_bar)).clamp(min=0))
++                    x = prev_bar.sqrt()*start+torch.sqrt((1-prev_bar-sigma**2).clamp(min=0))*epsilon
++                    if eta and previous >= 0:
++                        x = x+sigma*torch.randn(shape, device=x.device, dtype=x.dtype, generator=generator)
++            return x.reshape(batch, num_samples, self.future, 2)
++        finally:
++            self.train(training)
++
++
++def make_model(config, normalizer):
++    if normalizer.get('coordinate_frame') != 'ego-centric':
++        raise ValueError('Direct trajectory diffusion requires an ego-centric normalizer')
++    mean = torch.as_tensor(normalizer['mean'])
++    std = torch.as_tensor(normalizer['std'])
++    if mean.shape != (8,) or std.shape != (8,) or not torch.isfinite(mean).all() or not torch.isfinite(std).all() or (std <= 0).any():
++        raise ValueError('Invalid eight-field normalizer')
++    return TrajectoryDiffusion(ConditionalTrajectoryDenoiser(config, normalizer), config)
++
++
++def collate_samples(samples):
++    import numpy as np
++    condition = {key: torch.from_numpy(np.stack([s['condition'][key] for s in samples]))
++                 for key in samples[0]['condition']}
++    return {'condition': condition, 'future_xy': torch.from_numpy(np.stack([s['future_xy'] for s in samples])),
++            'future_mask': torch.from_numpy(np.stack([s['future_mask'] for s in samples])),
++            'meta': [s['meta'] for s in samples]}
++
++
++def to_device(batch, device):
++    return {'condition': {key: value.to(device) for key, value in batch['condition'].items()},
++            'future_xy': batch['future_xy'].to(device), 'future_mask': batch['future_mask'].to(device),
++            'meta': batch['meta']}
+diff --git a/embodied/envs/trajectory_metrics.py b/embodied/envs/trajectory_metrics.py
+new file mode 100644
+--- /dev/null
++++ b/embodied/envs/trajectory_metrics.py
+@@ -0,0 +1,69 @@
++"""Meter-based displacement and explicitly provisional sampled kinematics."""
++import numpy as np
++
++
++PROVISIONAL_LIMITS = {'max_speed': 40., 'max_accel': 4., 'max_decel': 8.,
++                      'max_jerk': 15., 'max_yaw_rate': 1., 'max_lateral_accel': 4.}
++
++
++def displacement_metrics(predictions, truth):
++    predictions, truth = np.asarray(predictions), np.asarray(truth)
++    if predictions.ndim != 4 or predictions.shape[0] != len(truth) or predictions.shape[2:] != truth.shape[1:]:
++        raise ValueError('Expected predictions[B,K,F,2] and truth[B,F,2]')
++    if not np.isfinite(predictions).all() or not np.isfinite(truth).all():
++        raise ValueError('Nonfinite evaluation trajectory')
++    distance = np.linalg.norm(predictions-truth[:, None], axis=-1)
++    ade, fde = distance.mean(axis=-1), distance[..., -1]
++    k = predictions.shape[1]
++    diversity = [np.linalg.norm(predictions[:, a, -1]-predictions[:, b, -1], axis=-1)
++                 for a in range(k) for b in range(a+1, k)]
++    return {'mean_ADE_m': float(ade.mean()), 'mean_FDE_m': float(fde.mean()),
++            'minADE_m': float(ade.min(axis=1).mean()), 'minFDE_m': float(fde.min(axis=1).mean()),
++            'endpoint_diversity_m': float(np.stack(diversity).mean()) if diversity else 0.}
++
++
++def constant_velocity(metadata, future, dt):
++    times = np.arange(1, future+1)*dt
++    return np.stack([m['target_anchor_local'][:2]+times[:, None]*m['target_anchor_local'][2:4]
++                     for m in metadata])
++
++
++def states_from_xy(future_xy, anchor, dt):
++    future_xy, anchor = np.asarray(future_xy, dtype=float), np.asarray(anchor, dtype=float)
++    if future_xy.ndim != 2 or future_xy.shape[1] != 2 or len(future_xy) < 1 or anchor.shape != (8,) or dt <= 0:
++        raise ValueError('Invalid trajectory/anchor/dt')
++    if not np.isfinite(future_xy).all() or not np.isfinite(anchor).all() or np.any(anchor[6:8] <= 0):
++        raise ValueError('Finite positions and positive recorded dimensions required')
++    states = np.tile(anchor, (len(future_xy)+1, 1))
++    states[1:, :2] = future_xy
++    velocity = np.diff(states[:, :2], axis=0)/dt
++    states[1:, 2:4] = velocity
++    speed = np.linalg.norm(velocity, axis=-1)
++    yaw = float(anchor[4])
++    for i, v in enumerate(velocity, 1):
++        if speed[i-1] > 1e-3:
++            yaw = float(np.arctan2(v[1], v[0]))
++        states[i, 4] = yaw
++    acceleration = np.diff(states[:, 2:4], axis=0)/dt
++    tangent = np.stack((np.cos(states[1:, 4]), np.sin(states[1:, 4])), axis=-1)
++    states[1:, 5] = np.sum(acceleration*tangent, axis=-1)
++    return states
++
++
++def motion_valid(states, dt, limits=None):
++    limits = PROVISIONAL_LIMITS if limits is None else limits
++    velocity = states[:, 2:4]
++    acceleration = np.diff(velocity, axis=0)/dt
++    anchor_acceleration = states[0, 5]*np.array([np.cos(states[0, 4]), np.sin(states[0, 4])])
++    jerk = np.diff(np.vstack((anchor_acceleration, acceleration)), axis=0)/dt
++    speed = np.linalg.norm(velocity[1:], axis=-1)
++    tangent = np.stack((np.cos(states[1:, 4]), np.sin(states[1:, 4])), axis=-1)
++    longitudinal = np.sum(acceleration*tangent, axis=-1)
++    lateral = np.abs(velocity[1:, 0]*acceleration[:, 1]-velocity[1:, 1]*acceleration[:, 0])/np.maximum(speed, 1e-6)
++    yaw_rate = np.arctan2(np.sin(np.diff(states[:, 4])), np.cos(np.diff(states[:, 4])))/dt
++    return bool(np.isfinite(states).all() and np.max(speed) <= limits['max_speed']+1e-7
++                and np.max(longitudinal) <= limits['max_accel']+1e-7
++                and np.min(longitudinal) >= -limits['max_decel']-1e-7
++                and np.max(np.linalg.norm(jerk, axis=-1)) <= limits['max_jerk']+1e-7
++                and np.max(np.abs(yaw_rate)) <= limits['max_yaw_rate']+1e-7
++                and np.max(lateral) <= limits['max_lateral_accel']+1e-7)
+diff --git a/embodied/envs/diffusion_candidate_adapter.py b/embodied/envs/diffusion_candidate_adapter.py
+new file mode 100644
+--- /dev/null
++++ b/embodied/envs/diffusion_candidate_adapter.py
+@@ -0,0 +1,57 @@
++"""Export single-NPC generated references; preserve measured history/provenance."""
++import hashlib
++import json
++from pathlib import Path
++
++import numpy as np
++
++try:
++    from .scenario_data import VEHICLE_FIELDS, _json_safe
++    from .trajectory_metrics import states_from_xy
++except ImportError:
++    from scenario_data import VEHICLE_FIELDS, _json_safe
++    from trajectory_metrics import states_from_xy
++
++
++def make_candidate(metadata, future_world_xy, dt, generation, seed=0, sample_index=0):
++    reference = metadata.get('position_reference')
++    if reference not in ('center', 'front_bumper_center'):
++        raise ValueError('Candidate export requires a known recorded position reference')
++    states = states_from_xy(future_world_xy, metadata['target_anchor_world'], dt)
++    identity = json.dumps({'episode_id': metadata['episode_id'], 'target_id': metadata['target_id'],
++               'window_index': metadata['window_index'], 'seed': seed, 'sample_index': sample_index,
++               'generation': generation}, sort_keys=True)
++    candidate_id = hashlib.sha256(identity.encode()+states.astype('<f8').tobytes()).hexdigest()[:24]
++    return {'schema_version': 1, 'format': 'long_tail_candidate_scene', 'candidate_kind': 'single_npc_reference',
++            'candidate_id': candidate_id, 'generator': 'direct_trajectory_diffusion',
++            'source_type': 'generated_candidate', 'prediction_source': 'diffusion_sample',
++            'parent_scenario_id': metadata['scenario_id'], 'parent_group_id': metadata['parent_group_id'],
++            'source_episode_id': metadata['episode_id'], 'source_path': metadata['source_path'],
++            'source_sha256': metadata['source_sha256'], 'window_index': metadata['window_index'],
++            'target_id': metadata['target_id'], 'seed': int(seed), 'sample_index': int(sample_index),
++            'coordinate_frame': 'world', 'position_reference': reference, 'state_fields': list(VEHICLE_FIELDS),
++            'units': {'position': 'm', 'velocity': 'm/s', 'time': 's', 'yaw': 'rad', 'a': 'm/s^2'},
++            'dt': float(dt), 'anchor_timestamp': metadata['anchor_timestamp'],
++            'target_history': {'states': metadata['target_history_world'].copy(), 'source': 'recorded'},
++            'target_trajectory': {'states': states, 'relative_timestamps': np.arange(len(states))*dt,
++                                  'mask': np.ones(len(states), dtype=bool)},
++            'kinematics_method': 'preceding-interval position differences; low-speed yaw holds last heading',
++            'generated_target_history': False, 'simulation_verified': False,
++            'ego_response': 'not_simulated', 'other_vehicle_future': 'not_generated',
++            'rssm_counterfactual_supported': False, 'risk': None, 'generation_metadata': dict(generation),
++            'execution_requirements': ['Bind the simulator map and measured initial states.',
++                                       'Validate NPC tracking and use a closed-loop ego controller.']}
++
++
++def save_candidate(candidate, output_prefix):
++    prefix = Path(output_prefix)
++    prefix.parent.mkdir(parents=True, exist_ok=True)
++    json_path, npz_path = prefix.with_suffix('.json'), prefix.with_suffix('.npz')
++    if json_path.exists() or npz_path.exists():
++        raise ValueError('Candidate output already exists')
++    payload = _json_safe(candidate)
++    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False)+'\n', encoding='utf-8')
++    np.savez_compressed(npz_path, target_states=candidate['target_trajectory']['states'],
++                        target_history=candidate['target_history']['states'],
++                        metadata_json=np.asarray(json.dumps(payload, ensure_ascii=False, allow_nan=False)))
++    return {'json': str(json_path), 'npz': str(npz_path)}
+diff --git a/embodied/envs/trajectory_training.py b/embodied/envs/trajectory_training.py
+new file mode 100644
+--- /dev/null
++++ b/embodied/envs/trajectory_training.py
+@@ -0,0 +1,327 @@
++"""Standalone direct diffusion training/evaluation; no original agent imports."""
++from collections import defaultdict
++import json
++from pathlib import Path
++import time
++
++import numpy as np
++import torch
++from torch.utils.data import DataLoader
++
++try:
++    from .scenario_data import ScenarioNormalizer, _json_safe
++    from .trajectory_dataset import TrajectoryDataset, EpisodeSampler
++    from .trajectory_diffusion import make_model, collate_samples, to_device
++    from .trajectory_metrics import displacement_metrics, constant_velocity, states_from_xy, motion_valid, PROVISIONAL_LIMITS
++    from .diffusion_candidate_adapter import make_candidate, save_candidate
++    from .prepare_trajectory_windows import _hash
++except ImportError:
++    from scenario_data import ScenarioNormalizer, _json_safe
++    from trajectory_dataset import TrajectoryDataset, EpisodeSampler
++    from trajectory_diffusion import make_model, collate_samples, to_device
++    from trajectory_metrics import displacement_metrics, constant_velocity, states_from_xy, motion_valid, PROVISIONAL_LIMITS
++    from diffusion_candidate_adapter import make_candidate, save_candidate
++    from prepare_trajectory_windows import _hash
++
++
++def write_json(path, payload):
++    Path(path).write_text(json.dumps(_json_safe(payload), ensure_ascii=False, indent=2, allow_nan=False)+'\n', encoding='utf-8')
++
++
++def normalizer_payload(normalizer):
++    return {'mean': normalizer.mean.tolist(), 'std': normalizer.std.tolist(), 'count': int(normalizer.count),
++            'normalizer_id': normalizer.normalizer_id, 'coordinate_frame': normalizer.coordinate_frame,
++            'training_episode_ids': list(normalizer.training_episode_ids), 'yaw_mode': 'circular_mean_wrapped_residual'}
++
++
++class SyntheticTrajectoryDataset:
++    """Explicit kinematic format smoke data; never a recorded-episode substitute."""
++    def __init__(self, split='train', limit=None, seed=0, max_neighbors=8):
++        self.split, self.seed, self.epoch = split, int(seed), 0
++        self.config = {'history': 11, 'future': 30, 'dt': .2, 'stride': 1}
++        self.available_windows = 16 if split == 'train' else 4
++        self.count = min(limit, self.available_windows) if limit is not None else self.available_windows
++        self.max_neighbors = max_neighbors
++        self.normalizer = ScenarioNormalizer(np.zeros(8), np.array([20., 10., 10., 10., 1., 4., 5., 2.]),
++                       0, tuple('synthetic-train-%d' % i for i in range(16)), 'synthetic-fixed-scales-v1', 'ego-centric')
++        self.fingerprint = {'dataset_source': 'synthetic_kinematics', 'generator_version': 1,
++                            'seed': self.seed, 'window_config': dict(self.config),
++                            'normalizer_id': self.normalizer.normalizer_id}
++        self.episode_indices = {'synthetic-%d' % i: np.array([i]) for i in range(self.count)}
++        self.manifest = {'split_window_counts': {'train': 16, 'val': 4, 'test': 4}}
++        self.maps = None
++
++    def __len__(self):
++        return self.count
++
++    def set_epoch(self, epoch):
++        self.epoch = int(epoch)
++
++    def __getitem__(self, index):
++        h, f, dt = self.config['history'], self.config['future'], self.config['dt']
++        offset = 0 if self.split == 'train' else 100 if self.split == 'val' else 200
++        i = int(index)+offset
++        past, future = np.arange(-(h-1), 1)*dt, np.arange(1, f+1)*dt
++        position, speed = np.array([10.+(i % 5), 3.+.2*(i % 3)]), 3.+.2*(i % 4)
++        ego = np.tile([0., 0., 5., 0., 0., 0., 4.5, 1.8], (h, 1))
++        ego[:, 0] = 5*past
++        target = np.tile([position[0], position[1], speed, 0., 0., 0., 4.5, 1.8], (h, 1))
++        target[:, 0] += speed*past
++        label = position+np.stack((speed*future, .2*np.sin(future*.5)*(i % 3-1)), axis=-1)
++        condition = {'ego_history': self.normalizer.transform(ego).astype(np.float32), 'ego_mask': np.ones(h, bool),
++                     'target_history': self.normalizer.transform(target).astype(np.float32), 'target_mask': np.ones(h, bool),
++                     'neighbor_history': np.zeros((h, self.max_neighbors, 8), np.float32),
++                     'neighbor_mask': np.zeros((h, self.max_neighbors), bool),
++                     'map_segments': np.zeros((64, 6), np.float32), 'map_mask': np.zeros(64, bool),
++                     'scene_type': np.asarray(0, dtype=np.int64)}
++        origin = np.array([100., 200.])
++        target_world, ego_world = target.copy(), ego.copy()
++        target_world[:, :2] += origin
++        ego_world[:, :2] += origin
++        metadata = {'dataset_index': int(index), 'episode_id': 'synthetic-%s-%d' % (self.split, i),
++                    'scenario_id': 'synthetic-%s-%d' % (self.split, i), 'parent_group_id': 'synthetic-%s-%d' % (self.split, i),
++                    'target_id': 'target', 'source_path': 'synthetic_kinematics', 'source_sha256': 'not_a_recorded_npz',
++                    'window_index': 0, 'anchor_timestamp': 2., 'world_anchor': ego_world[-1],
++                    'target_anchor_world': target_world[-1], 'target_anchor_local': target[-1],
++                    'target_history_world': target_world, 'ego_history_world': ego_world,
++                    'position_reference': 'center', 'map_source': {'available': False}, 'source_cfg': None, 'split': self.split}
++        return {'condition': condition, 'future_xy': ((label-self.normalizer.mean[:2])/self.normalizer.std[:2]).astype(np.float32),
++                'future_mask': np.ones(f, bool), 'meta': metadata}
++
++    def xy_to_world(self, values, metadata):
++        return TrajectoryDataset.xy_to_world(self, values, metadata)
++
++
++def new_output(path):
++    path = Path(path).resolve()
++    if path.exists() and (not path.is_dir() or any(path.iterdir())):
++        raise ValueError('Output directory must be new or empty')
++    path.mkdir(parents=True, exist_ok=True)
++    return path
++
++
++def choose_device(value):
++    if value == 'auto':
++        value = 'cuda:0' if torch.cuda.is_available() else 'cpu'
++    device = torch.device(value)
++    if device.type == 'cuda' and not torch.cuda.is_available():
++        raise ValueError('Requested CUDA device is unavailable')
++    return device
++
++
++def make_dataset(args, split, limit=None):
++    if args.synthetic_smoke:
++        return SyntheticTrajectoryDataset(split, limit=limit, seed=args.seed, max_neighbors=args.max_neighbors)
++    if not args.dataset_manifest:
++        raise ValueError('--dataset-manifest is required unless --synthetic-smoke is used')
++    return TrajectoryDataset(args.dataset_manifest, split, input_root=args.input_root,
++                split_manifest=args.split_manifest, max_neighbors=args.max_neighbors,
++                cache_size=args.cache_size, limit=limit, seed=args.seed, map_root=args.map_root)
++
++
++def save_checkpoint(path, model, optimizer, config, normalizer, fingerprint, step, epoch, args):
++    torch.save({'format': 'sumo_direct_trajectory_diffusion', 'schema_version': 1,
++                'model_config': dict(config), 'normalizer': normalizer, 'dataset_fingerprint': fingerprint,
++                'model_state': model.state_dict(), 'optimizer_state': optimizer.state_dict(),
++                'optimization_steps': step, 'epoch': epoch, 'seed': int(args.seed),
++                'dataset_source': 'synthetic_kinematics' if args.synthetic_smoke else 'recorded_sumo',
++                'training_options': dict(vars(args)), 'torch_version': str(torch.__version__)}, path)
++
++
++def load_checkpoint(path, device='cpu', expected_fingerprint=None):
++    payload = torch.load(path, map_location=device, weights_only=True)
++    if (payload.get('format') != 'sumo_direct_trajectory_diffusion' or payload.get('schema_version') != 1):
++        raise ValueError('Unsupported trajectory checkpoint')
++    if expected_fingerprint is not None and payload['dataset_fingerprint'] != expected_fingerprint:
++        raise ValueError('Checkpoint dataset fingerprint mismatch')
++    if payload['normalizer']['normalizer_id'] != payload['dataset_fingerprint']['normalizer_id']:
++        raise ValueError('Checkpoint normalizer identity mismatch')
++    model = make_model(payload['model_config'], payload['normalizer']).to(device)
++    model.load_state_dict(payload['model_state'], strict=True)
++    return model, payload
++
++
++def _plot(path, predictions, truth, metadata):
++    try:
++        import matplotlib
++        matplotlib.use('Agg')
++        import matplotlib.pyplot as plt
++    except ImportError:
++        return None
++    fig, ax = plt.subplots(figsize=(7, 5))
++    history = metadata['target_history_world'][:, :2]
++    ax.plot(history[:, 0], history[:, 1], 'k.-', label='Recorded history')
++    ax.plot(truth[:, 0], truth[:, 1], 'g.-', label='Recorded future')
++    for i, candidate in enumerate(predictions):
++        ax.plot(candidate[:, 0], candidate[:, 1], alpha=.6, label='Generated samples' if i == 0 else None)
++    ax.set(xlabel='World x [m]', ylabel='World y [m]', title='Offline generated NPC references; not simulation verified')
++    ax.axis('equal'); ax.legend(); fig.tight_layout(); fig.savefig(path, dpi=140); plt.close(fig)
++    return str(path)
++
++
++@torch.no_grad()
++def evaluate(model, dataset, device, batch_size=32, num_samples=4, sampling_steps=20,
++             seed=0, method='ddim', num_workers=0, output=None, export_limit=0, generation=None):
++    if not len(dataset):
++        raise ValueError('Evaluation split is empty')
++    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers,
++                        collate_fn=collate_samples, generator=torch.Generator().manual_seed(seed))
++    sums, count, duration = defaultdict(float), 0, 0.
++    motion_ok = road_ok = road_count = map_windows = 0
++    exported, plots = [], []
++    previous_training = model.training
++    model.eval()
++    try:
++        for number, batch in enumerate(loader):
++            batch = to_device(batch, device)
++            if device.type == 'cuda':
++                torch.cuda.synchronize(device)
++            started = time.perf_counter()
++            sampled = model.sample(batch['condition'], num_samples=num_samples, method=method,
++                                   steps=sampling_steps, seed=seed+number)
++            if device.type == 'cuda':
++                torch.cuda.synchronize(device)
++            duration += time.perf_counter()-started
++            generator = torch.Generator(device=device).manual_seed(seed+100000+number)
++            t = torch.randint(model.num_steps, (len(sampled),), device=device, generator=generator)
++            noise = torch.randn(batch['future_xy'].shape, device=device, generator=generator)
++            loss = model.training_loss(batch['condition'], batch['future_xy'], batch['future_mask'], t=t, noise=noise)
++            normalizer = dataset.normalizer
++            prediction = sampled.cpu().numpy()*normalizer.std[:2]+normalizer.mean[:2]
++            truth = batch['future_xy'].cpu().numpy()*normalizer.std[:2]+normalizer.mean[:2]
++            result = displacement_metrics(prediction, truth)
++            baseline = constant_velocity(batch['meta'], model.future, dataset.config['dt'])
++            cv = displacement_metrics(baseline[:, None], truth)
++            result.update(constant_velocity_ADE_m=cv['mean_ADE_m'], constant_velocity_FDE_m=cv['mean_FDE_m'],
++                          noise_prediction_loss=float(loss))
++            n = len(prediction)
++            for key, value in result.items():
++                sums[key] += n*value
++            for i, metadata in enumerate(batch['meta']):
++                world = dataset.xy_to_world(sampled[i].cpu().numpy(), metadata)
++                world_truth = dataset.xy_to_world(batch['future_xy'][i].cpu().numpy(), metadata)
++                loaded_map = dataset.maps.load(metadata['source_cfg']) if dataset.maps is not None else None
++                if loaded_map is not None:
++                    map_windows += 1
++                for trajectory in world:
++                    states = states_from_xy(trajectory, metadata['target_anchor_world'], dataset.config['dt'])
++                    motion_ok += int(motion_valid(states, dataset.config['dt']))
++                    if loaded_map is not None and metadata['position_reference'] in ('center', 'front_bumper_center'):
++                        center = states.copy()
++                        if metadata['position_reference'] == 'front_bumper_center':
++                            center[:, :2] -= .5*center[:, 6:7]*np.stack((np.cos(center[:, 4]), np.sin(center[:, 4])), axis=-1)
++                        road_count += 1
++                        road_ok += int(loaded_map[0].footprint_valid(center))
++                if output is not None and len(exported) < export_limit:
++                    # Export the first sample, never an oracle selected by future labels.
++                    candidate_generation = dict(generation or {}, sampling_context={
++                        'batch_size': n, 'batch_row': i, 'num_samples': num_samples,
++                        'batch_dataset_indices': [m['dataset_index'] for m in batch['meta']]})
++                    candidate = make_candidate(metadata, world[0], dataset.config['dt'], candidate_generation,
++                                               seed=seed+number, sample_index=0)
++                    prefix = Path(output)/('candidate_%04d' % len(exported))
++                    exported.append(save_candidate(candidate, prefix))
++                    plot = _plot(prefix.with_suffix('.png'), world, world_truth, metadata)
++                    if plot:
++                        plots.append(plot)
++            count += n
++        report = {key: value/count for key, value in sums.items()}
++        report.update(evaluated_windows=count, evaluation_split=dataset.split, samples_per_window=num_samples,
++                      sampling_method=method, sampling_steps=sampling_steps,
++                      limited_evaluation=count < dataset.manifest['split_window_counts'][dataset.split],
++                      sampling_seconds=duration, seconds_per_window=duration/count,
++                      motion_valid_rate=motion_ok/(count*num_samples), motion_limits=PROVISIONAL_LIMITS,
++                      motion_validity_definition='sampled kinematics under provisional configured thresholds; not calibrated vehicle validity',
++                      road_valid_rate=road_ok/road_count if road_count else None,
++                      road_checked_samples=road_count, map_missing_window_rate=1-map_windows/count,
++                      road_validity_definition='sampled footprint in current SUMO lane buffers; not simulator verification',
++                      oracle_metric_definition='minADE and minFDE independently select the best of K against recorded labels',
++                      exported_candidates=exported, plots=plots, simulation_verified=False)
++        return report
++    finally:
++        model.train(previous_training)
++
++
++def run_training(args):
++    if args.epochs < 1 or args.batch_size < 1 or args.samples < 1 or (args.max_steps is not None and args.max_steps < 1):
++        raise ValueError('Training counts must be positive')
++    torch.set_num_threads(args.torch_threads)
++    torch.manual_seed(args.seed)
++    np.random.seed(args.seed)
++    if torch.cuda.is_available():
++        torch.cuda.manual_seed_all(args.seed)
++    device = choose_device(args.device)
++    train = make_dataset(args, 'train', args.train_limit or None)
++    val = make_dataset(args, 'val', args.val_limit or None)
++    if not len(train) or (not len(val) and not args.allow_train_only_smoke):
++        raise ValueError('Nonempty train/val required; use --allow-train-only-smoke only for explicit smoke checks')
++    config = dict(history=train.config['history'], future=train.config['future'], dt=train.config['dt'],
++                  base_dim=args.base_dim, dim_mults=args.dim_mults, condition_dim=args.condition_dim,
++                  diffusion_steps=args.diffusion_steps, beta_schedule=args.beta_schedule)
++    if args.sampling_steps > args.diffusion_steps:
++        raise ValueError('Sampling steps cannot exceed diffusion steps')
++    output = new_output(args.output)
++    write_json(output/'config.json', {'model': config, 'training': vars(args), 'dataset_fingerprint': train.fingerprint})
++    normalizer = normalizer_payload(train.normalizer)
++    model = make_model(config, normalizer).to(device)
++    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
++    sampler = EpisodeSampler(train, seed=args.seed)
++    step, best, epochs, last_validation = 0, float('inf'), [], None
++    for epoch in range(args.epochs):
++        train.set_epoch(epoch)
++        loader = DataLoader(train, batch_size=args.batch_size, sampler=sampler, num_workers=args.num_workers,
++                            collate_fn=collate_samples, generator=torch.Generator().manual_seed(args.seed+epoch))
++        model.train()
++        loss_sum = trained = 0
++        for batch in loader:
++            batch = to_device(batch, device)
++            optimizer.zero_grad(set_to_none=True)
++            loss = model.training_loss(batch['condition'], batch['future_xy'], batch['future_mask'])
++            if not torch.isfinite(loss):
++                raise ValueError('Nonfinite training loss')
++            loss.backward()
++            gradient_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.)
++            if not torch.isfinite(gradient_norm):
++                raise ValueError('Nonfinite training gradients')
++            optimizer.step()
++            step += 1
++            loss_sum += float(loss.detach())*len(batch['future_xy'])
++            trained += len(batch['future_xy'])
++            if step == 1 or step % args.log_every == 0:
++                print('[train epoch=%d step=%d] loss=%.6f' % (epoch+1, step, float(loss.detach())), file=__import__('sys').stderr, flush=True)
++            if args.max_steps is not None and step >= args.max_steps:
++                break
++        if len(val):
++            last_validation = evaluate(model, val, device, batch_size=args.batch_size, num_samples=args.samples,
++                                     sampling_steps=args.sampling_steps, seed=args.seed, num_workers=args.num_workers)
++            score = last_validation['minADE_m']
++        else:
++            score = loss_sum/max(trained, 1)
++        row = {'epoch': epoch+1, 'optimization_steps': step, 'train_loss': loss_sum/max(trained, 1),
++               'trained_window_visits': trained, 'validation': last_validation}
++        epochs.append(row)
++        with (output/'metrics.jsonl').open('a', encoding='utf-8') as stream:
++            stream.write(json.dumps(row, allow_nan=False)+'\n')
++        save_checkpoint(output/'latest.pt', model, optimizer, config, normalizer, train.fingerprint, step, epoch+1, args)
++        if score < best:
++            best = score
++            save_checkpoint(output/'best.pt', model, optimizer, config, normalizer, train.fingerprint, step, epoch+1, args)
++        if args.max_steps is not None and step >= args.max_steps:
++            break
++    restored, _ = load_checkpoint(output/'latest.pt', device, expected_fingerprint=train.fingerprint)
++    probe = to_device(collate_samples([train[0]]), device)
++    a = model.sample(probe['condition'], method='ddim', steps=args.sampling_steps, seed=args.seed)
++    b = restored.sample(probe['condition'], method='ddim', steps=args.sampling_steps, seed=args.seed)
++    if not torch.equal(a, b):
++        raise ValueError('Saved checkpoint does not reproduce seeded samples')
++    report = {'exit_code': 0, 'dataset_source': 'synthetic_kinematics' if args.synthetic_smoke else 'recorded_sumo',
++              'device': str(device), 'torch_version': str(torch.__version__), 'model_config': config,
++              'dataset_fingerprint': train.fingerprint, 'normalizer_id': train.normalizer.normalizer_id,
++              'optimization_steps': step, 'epochs_completed': len(epochs), 'train_windows_selected': len(train),
++              'validation_windows_selected': len(val), 'validation': last_validation,
++              'train_only_smoke': not len(val), 'checkpoint_roundtrip_verified': True,
++              'best_checkpoint_selection': 'val minADE over K samples' if len(val) else 'train loss for smoke only',
++              'latest_checkpoint': str(output/'latest.pt'), 'best_checkpoint': str(output/'best.pt'),
++              'training_report_path': str(output/'training_report.json'), 'simulation_verified': False}
++    write_json(output/'training_report.json', report)
++    return report
+diff --git a/embodied/envs/train_trajectory_diffusion.py b/embodied/envs/train_trajectory_diffusion.py
+new file mode 100644
+--- /dev/null
++++ b/embodied/envs/train_trajectory_diffusion.py
+@@ -0,0 +1,53 @@
++"""Train plain single-NPC x/y diffusion using the already-frozen window index."""
++import argparse
++import json
++import sys
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('--dataset-manifest')
++    parser.add_argument('--synthetic-smoke', action='store_true')
++    parser.add_argument('--allow-train-only-smoke', action='store_true')
++    parser.add_argument('--output', required=True)
++    parser.add_argument('--input-root')
++    parser.add_argument('--split-manifest')
++    parser.add_argument('--map-root')
++    parser.add_argument('--device', default='auto')
++    parser.add_argument('--epochs', type=int, default=20)
++    parser.add_argument('--max-steps', type=int)
++    parser.add_argument('--batch-size', type=int, default=32)
++    parser.add_argument('--lr', type=float, default=2e-4)
++    parser.add_argument('--train-limit', type=int, default=0, help='0 uses all train windows')
++    parser.add_argument('--val-limit', type=int, default=512, help='0 uses all val windows; default explicitly monitors a subset')
++    parser.add_argument('--max-neighbors', type=int, default=8)
++    parser.add_argument('--cache-size', type=int, default=2)
++    parser.add_argument('--num-workers', type=int, default=0)
++    parser.add_argument('--torch-threads', type=int, default=1)
++    parser.add_argument('--seed', type=int, default=0)
++    parser.add_argument('--base-dim', type=int, default=32)
++    parser.add_argument('--dim-mults', type=int, nargs='+', default=[1, 2, 4])
++    parser.add_argument('--condition-dim', type=int, default=64)
++    parser.add_argument('--diffusion-steps', type=int, default=100)
++    parser.add_argument('--beta-schedule', choices=('cosine', 'linear'), default='cosine')
++    parser.add_argument('--sampling-steps', type=int, default=20)
++    parser.add_argument('--samples', type=int, default=4)
++    parser.add_argument('--log-every', type=int, default=100)
++    args = parser.parse_args(argv)
++    try:
++        if (args.lr <= 0 or args.train_limit < 0 or args.val_limit < 0 or args.num_workers < 0
++                or args.torch_threads < 1 or args.log_every < 1):
++            raise ValueError('Invalid learning rate/count/worker settings')
++        try:
++            from .trajectory_training import run_training
++        except ImportError:
++            from trajectory_training import run_training
++        report = run_training(args)
++    except (ImportError, ValueError, TypeError, KeyError, OSError, RuntimeError) as error:
++        report = {'exit_code': 1, 'error': type(error).__name__+': '+str(error)}
++    print(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False), flush=True)
++    return report['exit_code']
++
++
++if __name__ == '__main__':
++    sys.exit(main())
+diff --git a/embodied/envs/sample_trajectories.py b/embodied/envs/sample_trajectories.py
+new file mode 100644
+--- /dev/null
++++ b/embodied/envs/sample_trajectories.py
+@@ -0,0 +1,71 @@
++"""Evaluate unguided samples; export a bounded number of unverified references."""
++import argparse
++import json
++import sys
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('--checkpoint', required=True)
++    parser.add_argument('--dataset-manifest')
++    parser.add_argument('--synthetic-smoke', action='store_true')
++    parser.add_argument('--output', required=True)
++    parser.add_argument('--split', choices=('train', 'val', 'test'), default='val')
++    parser.add_argument('--input-root')
++    parser.add_argument('--split-manifest')
++    parser.add_argument('--map-root')
++    parser.add_argument('--limit', type=int, default=128, help='0 evaluates the whole explicitly requested split')
++    parser.add_argument('--batch-size', type=int, default=32)
++    parser.add_argument('--max-neighbors', type=int)
++    parser.add_argument('--cache-size', type=int, default=2)
++    parser.add_argument('--num-workers', type=int, default=0)
++    parser.add_argument('--torch-threads', type=int, default=1)
++    parser.add_argument('--device', default='auto')
++    parser.add_argument('--samples', type=int, default=20)
++    parser.add_argument('--sampling-steps', type=int, default=20)
++    parser.add_argument('--method', choices=('ddpm', 'ddim'), default='ddim')
++    parser.add_argument('--seed', type=int, default=0)
++    parser.add_argument('--export-limit', type=int, default=3)
++    args = parser.parse_args(argv)
++    try:
++        if (args.limit < 0 or args.export_limit < 0 or args.samples < 1 or args.batch_size < 1
++                or args.torch_threads < 1 or args.num_workers < 0):
++            raise ValueError('Invalid evaluation count/worker settings')
++        try:
++            from .trajectory_training import load_checkpoint, make_dataset, choose_device, new_output, evaluate, write_json, _hash
++        except ImportError:
++            from trajectory_training import load_checkpoint, make_dataset, choose_device, new_output, evaluate, write_json, _hash
++        import torch
++        torch.set_num_threads(args.torch_threads)
++        device = choose_device(args.device)
++        model, checkpoint = load_checkpoint(args.checkpoint, device)
++        if (checkpoint['dataset_source'] == 'synthetic_kinematics') != args.synthetic_smoke:
++            raise ValueError('Synthetic and recorded dataset sources cannot be mixed')
++        if args.max_neighbors is None:
++            args.max_neighbors = checkpoint['training_options']['max_neighbors']
++        sampling_seed = args.seed
++        args.seed = checkpoint['seed']
++        dataset = make_dataset(args, args.split, args.limit or None)
++        args.seed = sampling_seed
++        if dataset.fingerprint != checkpoint['dataset_fingerprint']:
++            raise ValueError('Evaluation dataset fingerprint differs from checkpoint')
++        output = new_output(args.output)
++        generation = {'checkpoint_sha256': _hash(args.checkpoint),
++                      'normalizer_id': checkpoint['normalizer']['normalizer_id'],
++                      'dataset_fingerprint': dataset.fingerprint, 'model_config': checkpoint['model_config'],
++                      'sampling_method': args.method, 'sampling_steps': args.sampling_steps}
++        report = evaluate(model, dataset, device, batch_size=args.batch_size, num_samples=args.samples,
++                          sampling_steps=args.sampling_steps, method=args.method, seed=args.seed,
++                          num_workers=args.num_workers, output=output, export_limit=args.export_limit,
++                          generation=generation)
++        report.update(exit_code=0, dataset_source=checkpoint['dataset_source'], generation=generation,
++                      report_path=str(output/'evaluation.json'))
++        write_json(output/'evaluation.json', report)
++    except (ImportError, ValueError, TypeError, KeyError, OSError, RuntimeError) as error:
++        report = {'exit_code': 1, 'error': type(error).__name__+': '+str(error)}
++    print(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False), flush=True)
++    return report['exit_code']
++
++
++if __name__ == '__main__':
++    sys.exit(main())
+diff --git a/tests/test_trajectory_dataset.py b/tests/test_trajectory_dataset.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_trajectory_dataset.py
+@@ -0,0 +1,265 @@
++"""Frozen-index loading, history-only conditions and world coordinate behavior."""
++import importlib
++import json
++import math
++from pathlib import Path
++import shutil
++import subprocess
++import sys
++import tempfile
++import unittest
++from unittest import mock
++
++import numpy as np
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(ROOT/'embodied/envs'))
++import prepare_trajectory_windows as prep
++from test_trajectory_windows import pool_fixture, read_json
++
++try:
++    subject = importlib.import_module('trajectory_dataset')
++except ImportError:
++    subject = None
++
++
++def prepared_fixture(work, alter=None):
++    split = pool_fixture(work, alter=alter)
++    prep.prepare_windows(split, work/'windows', history=3, future=2, dt=.2)
++    return work/'windows/window_dataset_manifest.json'
++
++
++class TrajectoryDatasetTest(unittest.TestCase):
++    def setUp(self):
++        self.assertIsNotNone(subject, 'Fixed-index trajectory dataset is missing')
++
++    def test_shapes_masks_labels_and_world_round_trip(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            manifest = prepared_fixture(work)
++            dataset = subject.TrajectoryDataset(manifest, 'val', max_neighbors=3)
++            self.assertEqual(len(dataset), 3)
++            item = dataset[0]
++            self.assertEqual(item['condition']['ego_history'].shape, (3, 8))
++            self.assertEqual(item['condition']['target_history'].shape, (3, 8))
++            self.assertEqual(item['condition']['neighbor_history'].shape, (3, 3, 8))
++            self.assertFalse(item['condition']['neighbor_mask'].any())
++            self.assertTrue(item['future_mask'].all())
++            self.assertEqual(item['future_xy'].shape, (2, 2))
++            for value in item['condition'].values():
++                self.assertTrue(np.isfinite(value).all())
++            np.testing.assert_allclose(dataset.xy_to_world(item['future_xy'], item['meta']),
++                                       [[111.2, 0.], [111.6, 0.]], atol=2e-6)
++            self.assertEqual(item['meta']['episode_id'], 'e5')
++            self.assertEqual(item['meta']['target_id'], 'npc')
++            self.assertEqual(item['meta']['position_reference'], 'front_bumper_center')
++
++    def test_rotated_anchor_is_inverted_without_reusing_world_normalization(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            def alter(i, record):
++                for step, frame in enumerate(record['replay_trajectory']['frames']):
++                    frame['vehicles'][0].update(pos=[100., .8*step], yaw=math.pi/2)
++                    frame['vehicles'][1].update(pos=[103., 4.+.4*step], yaw=math.pi/2)
++            manifest = prepared_fixture(work, alter=alter)
++            dataset = subject.TrajectoryDataset(manifest, 'val')
++            item = dataset[0]
++            np.testing.assert_allclose(dataset.xy_to_world(item['future_xy'], item['meta']),
++                                       [[103., 5.2], [103., 5.6]], atol=2e-6)
++            np.testing.assert_allclose(item['meta']['target_anchor_local'][:2], [3.2, -3.], atol=1e-12)
++
++    def test_future_poisoning_changes_only_labels_not_conditions_or_target_choice(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            manifest = prepared_fixture(work)
++            first = subject.TrajectoryDataset(manifest, 'val')[0]
++            original = subject._load_checked
++            def poisoned(entry):
++                episode, fingerprint = original(entry)
++                episode.ego_state[3:, :4] += 10000.
++                episode.npc_states[3:, :, :4] -= 10000.
++                return episode, fingerprint
++            with mock.patch.object(subject, '_load_checked', side_effect=poisoned):
++                second = subject.TrajectoryDataset(manifest, 'val')[0]
++            self.assertEqual(first['meta']['target_id'], second['meta']['target_id'])
++            for name in first['condition']:
++                np.testing.assert_array_equal(first['condition'][name], second['condition'][name])
++            self.assertFalse(np.allclose(first['future_xy'], second['future_xy']))
++
++    def test_training_target_sampling_is_seeded_and_held_out_is_history_based(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            def alter(i, record):
++                for frame in record['replay_trajectory']['frames']:
++                    other = dict(frame['vehicles'][1], id='farther', pos=[140., 0.])
++                    frame['vehicles'].append(other)
++            manifest = prepared_fixture(work, alter=alter)
++            dataset = subject.TrajectoryDataset(manifest, 'train', seed=7)
++            chosen = set()
++            for epoch in range(20):
++                dataset.set_epoch(epoch)
++                a = dataset[0]['meta']['target_id']
++                self.assertEqual(a, dataset[0]['meta']['target_id'])
++                chosen.add(a)
++            self.assertEqual(chosen, {'npc', 'farther'})
++            held_out = subject.TrajectoryDataset(manifest, 'test', seed=99)
++            self.assertEqual(held_out[0]['meta']['target_id'], 'npc')
++            held_out.set_epoch(100)
++            self.assertEqual(held_out[0]['meta']['target_id'], 'npc')
++
++    def test_missing_neighbor_frames_keep_false_masks_and_finite_network_values(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            def alter(i, record):
++                for step, frame in enumerate(record['replay_trajectory']['frames']):
++                    if step != 1:
++                        frame['vehicles'].append(dict(frame['vehicles'][1], id='partial', pos=[125., 3.]))
++            manifest = prepared_fixture(work, alter=alter)
++            item = subject.TrajectoryDataset(manifest, 'val', max_neighbors=1)[0]
++            np.testing.assert_array_equal(item['condition']['neighbor_mask'][:, 0], [True, False, True])
++            np.testing.assert_array_equal(item['condition']['neighbor_history'][1, 0], np.zeros(8))
++            self.assertTrue(np.isfinite(item['condition']['neighbor_history']).all())
++
++    def test_index_corruption_is_rejected_before_using_rows(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            manifest = prepared_fixture(work)
++            with (work/'windows/window_index.jsonl').open('ab') as stream:
++                stream.write(b'{}\n')
++            with self.assertRaisesRegex(ValueError, 'index.*hash|hash.*index'):
++                subject.TrajectoryDataset(manifest, 'train')
++
++    def test_normalizer_parameter_changes_with_same_id_are_rejected(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            manifest = prepared_fixture(work)
++            normalizer = work/'windows/normalizer.json'
++            payload = read_json(normalizer)
++            payload['mean'][0] += 100.
++            normalizer.write_text(json.dumps(payload), encoding='utf-8')
++            with self.assertRaisesRegex(ValueError, 'normalizer|Normalizer'):
++                subject.TrajectoryDataset(manifest, 'train')
++
++    def test_source_modification_is_caught_even_after_the_episode_was_cached(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            manifest = prepared_fixture(work)
++            dataset = subject.TrajectoryDataset(manifest, 'val')
++            dataset[0]
++            with (work/'pool/e5.npz').open('ab') as stream:
++                stream.write(b'changed')
++            with self.assertRaisesRegex(ValueError, 'changed|hash'):
++                dataset[1]
++
++    def test_index_rewrite_after_construction_cannot_inject_held_out_training_rows(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            manifest = prepared_fixture(work)
++            dataset = subject.TrajectoryDataset(manifest, 'train')
++            index = work/'windows/window_index.jsonl'
++            rows = index.read_bytes().splitlines(keepends=True)
++            rows[0] = next(row for row in rows if json.loads(row)['split'] == 'val')
++            index.write_bytes(b''.join(rows))
++            with self.assertRaisesRegex(ValueError, 'index|split|changed'):
++                dataset[0]
++
++    def test_maps_changed_before_first_load_or_after_cache_use_are_rejected(self):
++        for after_cache in (False, True):
++            with self.subTest(after_cache=after_cache), tempfile.TemporaryDirectory() as directory:
++                work = Path(directory)
++                maps = work/'maps'
++                maps.mkdir()
++                (maps/'scene.sumocfg').write_text('<configuration><input><net-file value="road.net.xml"/></input></configuration>')
++                net = maps/'road.net.xml'
++                net.write_text('<net><edge><lane width="3" speed="10" shape="0,0 100,0"/></edge></net>')
++                def alter(i, record):
++                    record['source_cfg'] = '/old/scene.sumocfg'
++                manifest = prepared_fixture(work, alter=alter)
++                dataset = subject.TrajectoryDataset(manifest, 'val', map_root=maps)
++                if after_cache:
++                    dataset[0]
++                net.write_text('<net><edge><lane width="4" speed="10" shape="0,0 100,0"/></edge></net>')
++                with self.assertRaisesRegex(ValueError, 'map|Map|changed|binding'):
++                    dataset[1]
++
++    def test_episode_cache_reuses_adjacent_rows_and_stays_bounded(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            manifest = prepared_fixture(work)
++            dataset = subject.TrajectoryDataset(manifest, 'train', cache_size=2)
++            dataset[0]
++            dataset[1]
++            self.assertEqual(dataset.cache_info()['loads'], 1)
++            for i in range(0, len(dataset), 3):
++                dataset[i]
++                self.assertLessEqual(dataset.cache_info()['episodes'], 2)
++            self.assertEqual(dataset.cache_info()['loads'], 6)
++            sampler = subject.EpisodeSampler(dataset, seed=11)
++            one = list(sampler)
++            self.assertEqual(sorted(one), list(range(18)))
++            self.assertEqual(one, list(sampler))
++
++    def test_relocation_preserves_frozen_identity(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            manifest = prepared_fixture(work)
++            shutil.copytree(work/'pool', work/'moved_pool')
++            shutil.copytree(work/'windows', work/'moved_windows')
++            shutil.copytree(work/'split', work/'moved_split')
++            dataset = subject.TrajectoryDataset(work/'moved_windows/window_dataset_manifest.json', 'val',
++                        input_root=work/'moved_pool', split_manifest=work/'moved_split/split_manifest.json')
++            self.assertEqual(dataset[0]['meta']['target_id'], 'npc')
++            self.assertEqual(dataset.fingerprint['normalizer_id'], read_json(manifest)['normalizer']['normalizer_id'])
++
++    def test_numpy_inspection_cli_reports_real_shapes_without_training(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            manifest = prepared_fixture(work)
++            result = subprocess.run([sys.executable, str(ROOT/'embodied/envs/trajectory_dataset.py'),
++                     '--dataset-manifest', str(manifest), '--split', 'val', '--inspect', '2'],
++                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8')
++            self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
++            report = json.loads(result.stdout)
++            self.assertEqual(report['inspected_windows'], 2)
++            self.assertEqual(report['label_shape'], [2, 2])
++            self.assertTrue(report['finite_conditions'])
++
++    def test_optional_sumo_map_uses_the_same_anchor_and_marks_missing_maps(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            maps = work/'maps'
++            maps.mkdir()
++            (maps/'scene.sumocfg').write_text('<configuration><input><net-file value="road.net.xml"/></input></configuration>')
++            (maps/'road.net.xml').write_text('<net><edge><lane id="a" width="3" speed="10" shape="100,-10 100,10"/></edge></net>')
++            def alter(i, record):
++                record['source_cfg'] = '/old/unavailable/scene.sumocfg'
++            manifest = prepared_fixture(work, alter=alter)
++            dataset = subject.TrajectoryDataset(manifest, 'val', map_root=maps)
++            item = dataset[0]
++            self.assertTrue(item['condition']['map_mask'].any())
++            self.assertEqual(item['meta']['map_source']['identity_verified_against_recording'], False)
++            missing = subject.TrajectoryDataset(manifest, 'val')[0]
++            self.assertFalse(missing['condition']['map_mask'].any())
++
++    def test_map_cache_is_bounded_and_map_content_is_part_of_dataset_identity(self):
++        self.assertTrue(hasattr(subject.SumoMapStore, 'cache_info'), 'Bounded map cache is missing')
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            maps = work/'maps'
++            maps.mkdir()
++            net = maps/'road.net.xml'
++            net.write_text('<net><edge><lane width="3" speed="10" shape="0,0 100,0"/></edge></net>')
++            for i in range(6):
++                (maps/('s%d.sumocfg' % i)).write_text('<configuration><input><net-file value="road.net.xml"/></input></configuration>')
++            store = subject.SumoMapStore(maps, cache_size=2)
++            for i in range(6):
++                store.features('s%d.sumocfg' % i, np.zeros(8))
++                self.assertLessEqual(store.cache_info()['maps'], 2)
++            first = store.binding_fingerprint(['s0.sumocfg'])
++            net.write_text('<net><edge><lane width="4" speed="10" shape="0,0 100,0"/></edge></net>')
++            second = subject.SumoMapStore(maps).binding_fingerprint(['s0.sumocfg'])
++            self.assertNotEqual(first, second)
++
++
++if __name__ == '__main__':
++    unittest.main()
+diff --git a/tests/test_trajectory_diffusion.py b/tests/test_trajectory_diffusion.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_trajectory_diffusion.py
+@@ -0,0 +1,137 @@
++"""Real CPU tensor tests for direct-trajectory denoising and sampling."""
++import importlib
++import math
++from pathlib import Path
++import sys
++import unittest
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(ROOT/'embodied/envs'))
++try:
++    import torch
++except ImportError:
++    torch = None
++try:
++    subject = importlib.import_module('trajectory_diffusion')
++except ImportError:
++    subject = None
++
++
++def normalizer_fixture():
++    return {'mean': [0.]*8, 'std': [1.]*8, 'coordinate_frame': 'ego-centric',
++            'normalizer_id': 'synthetic-identity', 'training_episode_ids': ['synthetic-train'], 'count': 1}
++
++
++def config_fixture():
++    return {'history': 3, 'future': 30, 'dt': .2, 'base_dim': 8, 'dim_mults': [1, 2],
++            'condition_dim': 16, 'diffusion_steps': 8, 'beta_schedule': 'cosine'}
++
++
++def condition_fixture(batch=2, history=3, neighbors=2):
++    return {'ego_history': torch.randn(batch, history, 8), 'ego_mask': torch.ones(batch, history, dtype=torch.bool),
++            'target_history': torch.randn(batch, history, 8), 'target_mask': torch.ones(batch, history, dtype=torch.bool),
++            'neighbor_history': torch.randn(batch, history, neighbors, 8),
++            'neighbor_mask': torch.ones(batch, history, neighbors, dtype=torch.bool),
++            'map_segments': torch.zeros(batch, 4, 6), 'map_mask': torch.zeros(batch, 4, dtype=torch.bool),
++            'scene_type': torch.zeros(batch, dtype=torch.long)}
++
++
++@unittest.skipIf(torch is None, 'PyTorch runtime required; NumPy data tests remain available')
++class TrajectoryDiffusionTest(unittest.TestCase):
++    def setUp(self):
++        self.assertIsNotNone(subject, 'Direct trajectory diffusion module is missing')
++        torch.set_num_threads(1)
++        torch.manual_seed(0)
++
++    def test_thirty_frame_forward_backward_and_real_optimizer_update(self):
++        model = subject.make_model(config_fixture(), normalizer_fixture())
++        condition = condition_fixture()
++        future = torch.randn(2, 30, 2)
++        prediction = model.denoiser(torch.randn_like(future), torch.tensor([0, 7]), condition)
++        self.assertEqual(tuple(prediction.shape), (2, 30, 2))
++        loss = model.training_loss(condition, future)
++        self.assertTrue(torch.isfinite(loss))
++        before = [p.detach().clone() for p in model.parameters()]
++        optimizer = torch.optim.Adam(model.parameters(), lr=.001)
++        optimizer.zero_grad()
++        loss.backward()
++        grads = [p.grad for p in model.parameters() if p.grad is not None]
++        self.assertTrue(all(torch.isfinite(g).all() for g in grads))
++        self.assertTrue(any(g.abs().sum() > 0 for g in grads))
++        optimizer.step()
++        self.assertTrue(any(not torch.equal(a, b) for a, b in zip(before, model.parameters())))
++
++    def test_masked_nan_neighbors_and_missing_maps_do_not_contaminate_output(self):
++        model = subject.make_model(config_fixture(), normalizer_fixture())
++        condition = condition_fixture()
++        condition['neighbor_mask'][:] = False
++        condition['neighbor_history'][:] = float('nan')
++        condition['map_segments'][:] = float('nan')
++        result = model.denoiser(torch.zeros(2, 30, 2), torch.zeros(2, dtype=torch.long), condition)
++        self.assertTrue(torch.isfinite(result).all())
++        condition['neighbor_history'] = torch.zeros(2, 3, 0, 8)
++        condition['neighbor_mask'] = torch.zeros(2, 3, 0, dtype=torch.bool)
++        self.assertTrue(torch.isfinite(model.training_loss(condition, torch.zeros(2, 30, 2))))
++
++    def test_q_sample_and_posterior_use_the_same_zero_based_schedule(self):
++        config = dict(config_fixture(), diffusion_steps=4, beta_schedule='linear', beta_start=.1, beta_end=.4)
++        model = subject.make_model(config, normalizer_fixture())
++        x = torch.ones(2, 30, 2)
++        noisy = model.q_sample(x, torch.tensor([0, 3]), noise=torch.zeros_like(x))
++        self.assertAlmostEqual(noisy[0, 0, 0].item(), math.sqrt(.9), places=6)
++        self.assertAlmostEqual(noisy[1, 0, 0].item(), math.sqrt(.3024), places=6)
++        mean, variance = model.q_posterior(x, torch.zeros_like(x), torch.tensor([0, 1]))
++        self.assertAlmostEqual(mean[0, 0, 0].item(), 1., places=6)
++        self.assertAlmostEqual(variance[0, 0, 0].item(), 0., places=7)
++        self.assertAlmostEqual(mean[1, 0, 0].item(), .6776309271789387, places=6)
++        self.assertAlmostEqual(variance[1, 0, 0].item(), .07142857142857144, places=6)
++
++    def test_seeded_ddpm_and_actual_ddim_keep_batch_sample_and_time_axes(self):
++        model = subject.make_model(config_fixture(), normalizer_fixture())
++        condition = condition_fixture()
++        for method, steps in (('ddpm', 8), ('ddim', 4), ('ddim', 1)):
++            a = model.sample(condition, num_samples=3, method=method, steps=steps, seed=12)
++            b = model.sample(condition, num_samples=3, method=method, steps=steps, seed=12)
++            self.assertEqual(tuple(a.shape), (2, 3, 30, 2))
++            self.assertTrue(torch.isfinite(a).all())
++            torch.testing.assert_close(a, b, rtol=0, atol=0)
++            self.assertFalse(torch.equal(a[:, 0], a[:, 1]))
++        self.assertTrue(model.training)
++
++    def test_masked_future_nan_values_do_not_enter_noising_or_loss(self):
++        model = subject.make_model(config_fixture(), normalizer_fixture())
++        condition = condition_fixture()
++        labels = torch.zeros(2, 30, 2)
++        mask = torch.ones(2, 30, dtype=torch.bool)
++        mask[:, -1] = False
++        t, noise = torch.tensor([1, 4]), torch.zeros_like(labels)
++        first = model.training_loss(condition, labels, mask, t=t, noise=noise)
++        labels[:, -1] = float('nan')
++        second = model.training_loss(condition, labels, mask, t=t, noise=noise)
++        torch.testing.assert_close(first, second)
++        mask[:] = False
++        with self.assertRaisesRegex(ValueError, 'valid|mask'):
++            model.training_loss(condition, labels, mask)
++
++    def test_invalid_sampling_and_active_nonfinite_conditions_are_explicit_errors(self):
++        model = subject.make_model(config_fixture(), normalizer_fixture())
++        condition = condition_fixture()
++        with self.assertRaises(ValueError):
++            model.sample(condition, num_samples=0)
++        with self.assertRaises(ValueError):
++            model.sample(condition, method='ddpm', steps=4)
++        condition['target_history'][0, 0, 0] = float('nan')
++        with self.assertRaisesRegex(ValueError, 'finite|Nonfinite'):
++            model.training_loss(condition, torch.zeros(2, 30, 2))
++
++    def test_model_state_round_trip_reproduces_seeded_samples(self):
++        model = subject.make_model(config_fixture(), normalizer_fixture())
++        clone = subject.make_model(config_fixture(), normalizer_fixture())
++        clone.load_state_dict(model.state_dict(), strict=True)
++        condition = condition_fixture()
++        torch.testing.assert_close(model.sample(condition, seed=3, steps=4),
++                                   clone.sample(condition, seed=3, steps=4), rtol=0, atol=0)
++
++
++if __name__ == '__main__':
++    unittest.main()
+diff --git a/tests/test_trajectory_training.py b/tests/test_trajectory_training.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_trajectory_training.py
+@@ -0,0 +1,143 @@
++"""Metrics, honest candidates and complete train/checkpoint/evaluate workflows."""
++import importlib
++import json
++from pathlib import Path
++import subprocess
++import sys
++import tempfile
++import unittest
++
++import numpy as np
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(ROOT/'embodied/envs'))
++try:
++    import torch
++except ImportError:
++    torch = None
++try:
++    metrics = importlib.import_module('trajectory_metrics')
++    candidates = importlib.import_module('diffusion_candidate_adapter')
++    training = importlib.import_module('trajectory_training') if torch is not None else None
++except ImportError:
++    metrics = candidates = training = None
++
++
++def meta_fixture():
++    anchor = np.array([100., 200., 2., 0., 0., 0., 4.5, 1.8])
++    return {'episode_id': 'real-recorded-id', 'scenario_id': 'scene-1', 'parent_group_id': 'scenario:scene-1',
++            'target_id': 'npc', 'source_path': '/recorded/episode.npz', 'source_sha256': 'a'*64,
++            'window_index': 0, 'anchor_timestamp': 2., 'world_anchor': anchor,
++            'target_anchor_world': anchor, 'target_anchor_local': np.array([0., 0., 2., 0., 0., 0., 4.5, 1.8]),
++            'target_history_world': np.stack((anchor, anchor)), 'ego_history_world': np.stack((anchor, anchor)),
++            'position_reference': 'front_bumper_center', 'split': 'val'}
++
++
++class TrajectoryMetricsTest(unittest.TestCase):
++    def setUp(self):
++        self.assertIsNotNone(metrics, 'Trajectory evaluation and candidate adapters are missing')
++
++    def test_metric_means_oracle_best_and_diversity_have_explicit_definitions(self):
++        truth = np.zeros((1, 2, 2))
++        predictions = np.array([[[[1., 0.], [1., 0.]], [[3., 0.], [3., 0.]]]])
++        result = metrics.displacement_metrics(predictions, truth)
++        self.assertEqual(result['mean_ADE_m'], 2.)
++        self.assertEqual(result['mean_FDE_m'], 2.)
++        self.assertEqual(result['minADE_m'], 1.)
++        self.assertEqual(result['minFDE_m'], 1.)
++        self.assertEqual(result['endpoint_diversity_m'], 2.)
++
++    def test_constant_velocity_baseline_and_sampled_motion_use_anchor_and_dt(self):
++        baseline = metrics.constant_velocity([meta_fixture()], future=3, dt=.2)
++        np.testing.assert_allclose(baseline, [[[.4, 0.], [.8, 0.], [1.2, 0.]]])
++        world = baseline[0]+np.array([100., 200.])
++        states = metrics.states_from_xy(world, meta_fixture()['target_anchor_world'], .2)
++        np.testing.assert_allclose(states[1:, 2:4], [[2., 0.]]*3, atol=1e-12)
++        self.assertTrue(metrics.motion_valid(states, .2))
++        world[0] += 100.
++        self.assertFalse(metrics.motion_valid(metrics.states_from_xy(world, meta_fixture()['target_anchor_world'], .2), .2))
++
++    def test_candidate_preserves_recorded_history_and_reference_without_simulator_claims(self):
++        metadata = meta_fixture()
++        world = np.array([[100.4, 200.], [100.8, 200.]])
++        result = candidates.make_candidate(metadata, world, .2, {'normalizer_id': 'n', 'checkpoint_sha256': 'b'*64}, seed=1)
++        self.assertFalse(result['simulation_verified'])
++        self.assertFalse(result['generated_target_history'])
++        self.assertEqual(result['position_reference'], 'front_bumper_center')
++        self.assertEqual(result['source_type'], 'generated_candidate')
++        np.testing.assert_array_equal(result['target_history']['states'], metadata['target_history_world'])
++        self.assertEqual(len(result['target_trajectory']['states']), 3)
++        self.assertIsNone(result['risk'])
++        with tempfile.TemporaryDirectory() as directory:
++            files = candidates.save_candidate(result, Path(directory)/'candidate')
++            restored = json.loads(Path(files['json']).read_text())
++            with np.load(files['npz'], allow_pickle=False) as archive:
++                np.testing.assert_allclose(archive['target_states'], result['target_trajectory']['states'])
++                self.assertFalse(json.loads(str(archive['metadata_json'].item()))['simulation_verified'])
++            self.assertEqual(restored['candidate_id'], result['candidate_id'])
++
++
++@unittest.skipIf(torch is None, 'PyTorch required for training/checkpoint workflows')
++class TrajectoryTrainingTest(unittest.TestCase):
++    def setUp(self):
++        self.assertIsNotNone(training, 'Standalone trajectory training pipeline is missing')
++
++    def test_synthetic_cli_optimizes_saves_loads_and_evaluates_without_guidance(self):
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            command = [sys.executable, str(ROOT/'embodied/envs/train_trajectory_diffusion.py'),
++                '--synthetic-smoke', '--output', str(work/'train'), '--epochs', '1', '--max-steps', '2',
++                '--batch-size', '4', '--base-dim', '8', '--dim-mults', '1', '2', '--condition-dim', '16',
++                '--diffusion-steps', '8', '--sampling-steps', '4', '--samples', '2', '--train-limit', '16',
++                '--val-limit', '4', '--torch-threads', '1']
++            result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8')
++            self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
++            report = json.loads(result.stdout)
++            self.assertEqual(report['optimization_steps'], 2)
++            self.assertEqual(report['dataset_source'], 'synthetic_kinematics')
++            self.assertTrue(report['checkpoint_roundtrip_verified'])
++            self.assertEqual(report['validation']['evaluated_windows'], 4)
++            self.assertIsNone(report['validation']['road_valid_rate'])
++            checkpoint = work/'train/latest.pt'
++            model, payload = training.load_checkpoint(checkpoint, 'cpu')
++            self.assertEqual(payload['normalizer']['coordinate_frame'], 'ego-centric')
++            with self.assertRaisesRegex(ValueError, 'fingerprint|dataset'):
++                training.load_checkpoint(checkpoint, 'cpu', expected_fingerprint={'wrong': 'dataset'})
++            evaluation = subprocess.run([sys.executable, str(ROOT/'embodied/envs/sample_trajectories.py'),
++                '--checkpoint', str(checkpoint), '--synthetic-smoke', '--output', str(work/'samples'),
++                '--split', 'val', '--limit', '3', '--samples', '2', '--sampling-steps', '4',
++                '--export-limit', '1', '--torch-threads', '1'],
++                stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8')
++            self.assertEqual(evaluation.returncode, 0, evaluation.stdout+evaluation.stderr)
++            sampled = json.loads(evaluation.stdout)
++            self.assertEqual(sampled['evaluated_windows'], 3)
++            self.assertEqual(len(sampled['exported_candidates']), 1)
++            candidate = json.loads(Path(sampled['exported_candidates'][0]['json']).read_text())
++            sampling = candidate['generation_metadata'].get('sampling_context')
++            self.assertIsNotNone(sampling, 'Candidate lacks its random-number batch context')
++            self.assertEqual(sampling['num_samples'], 2)
++            self.assertEqual(sampling['batch_size'], 3)
++            self.assertEqual(sampling['batch_row'], 0)
++
++    def test_canonical_frozen_loader_can_train_and_validate_without_refitting_normalizer(self):
++        from test_trajectory_dataset import prepared_fixture
++        with tempfile.TemporaryDirectory() as directory:
++            work = Path(directory)
++            manifest = prepared_fixture(work)
++            normalizer_before = (work/'windows/normalizer.json').read_bytes()
++            result = subprocess.run([sys.executable, str(ROOT/'embodied/envs/train_trajectory_diffusion.py'),
++                '--dataset-manifest', str(manifest), '--output', str(work/'train'), '--epochs', '1',
++                '--max-steps', '1', '--train-limit', '4', '--val-limit', '2', '--batch-size', '2',
++                '--base-dim', '8', '--dim-mults', '1', '2', '--condition-dim', '16',
++                '--diffusion-steps', '8', '--sampling-steps', '4', '--samples', '2', '--torch-threads', '1'],
++                stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8')
++            self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
++            report = json.loads(result.stdout)
++            self.assertEqual(report['optimization_steps'], 1)
++            self.assertEqual(report['validation']['evaluated_windows'], 2)
++            self.assertTrue(report['validation']['limited_evaluation'])
++            self.assertEqual(normalizer_before, (work/'windows/normalizer.json').read_bytes())
++
++
++if __name__ == '__main__':
++    unittest.main()
+diff --git a/docs/long_tail_stage4.md b/docs/long_tail_stage4.md
+new file mode 100644
+--- /dev/null
++++ b/docs/long_tail_stage4.md
+@@ -0,0 +1,178 @@
++# 阶段四：单 NPC 直接轨迹扩散
++
++本版已实现固定窗口加载、无引导扩散训练、保存/加载、离线评估和候选导出。输入沿用阶段四已经冻结的划分、窗口索引和归一化器；不需要重新采集或重新训练 Dreamer。
++
++实现完成不代表生成质量达标。本地只有一个真实 episode；40 次真实样本更新后的运动有效率为 0，不能作为可执行危险场景使用。服务器全量 train/val 尚未在本地运行。
++
++## 服务器直接运行
++
++以下命令在项目根目录执行；目录名按你当前实际位置修改。已有完整代码同步时，跳过补丁安装。
++
++```bash
++conda activate dreamersafe
++cd /home/ubuntu/zw/dreamer_huifang_10_21_2
++
++# 仅使用补丁包时执行；dry-run 成功后再应用。
++unzip -o stage4_direct_diffusion.zip
++patch --dry-run --batch --forward -p1 < stage4_direct_diffusion.patch &&
++patch --batch --forward -p1 < stage4_direct_diffusion.patch
++
++python -c "import sys, numpy, torch; print(sys.version); print('numpy', numpy.__version__, 'torch', torch.__version__, 'cuda', torch.cuda.is_available())"
++```
++
++依赖为 NumPy 和 PyTorch，绘图另需可选的 Matplotlib。最终实际验证的运行环境为 Python 3.8.20、NumPy 1.24.4、PyTorch 2.3.0、CPU。新入口不依赖 NuScenes、PyG、TrafficModel 权重或 Dreamer 的 JAX 网络。先确认当前环境能够导入 torch；不要为了本功能覆盖原有 Dreamer 依赖。
++
++### 1. 检查现有数据加载器
++
++沿用已经通过验收的 951 个 episode 和原始 train/val/test 划分，不重建索引、不重新拟合归一化器。
++
++```bash
++RUN="sumo_fpi_log/20261021-105954_osrp_sumo_lag_vector_danger_sumo_None_0"
++WINDOWS="$RUN/stage4_windows_20261026_160548"
++SPLIT="$RUN/stage4_dataset_20261026_151923/split_manifest.json"
++POOL="$RUN/posttrain_episode_pool"
++MANIFEST="$WINDOWS/window_dataset_manifest.json"
++
++# 数组参数保留在同一个 Bash 会话中，后续命令继续使用。
++DATA=(--dataset-manifest "$MANIFEST" --split-manifest "$SPLIT" --input-root "$POOL")
++
++python -u embodied/envs/trajectory_dataset.py "${DATA[@]}" \
++  --split train --inspect 16
++
++python -m unittest discover -s tests
++```
++
++数据检查应返回 `exit_code: 0`、`label_shape: [30, 2]`、`finite_conditions: true`，世界坐标往返误差应远小于毫米。启动时会校验并扫描整个索引；`--inspect 16` 只限制取样检查的数量。不会一次性加载全部 NPZ 或物化数百万条轨迹张量。
++
++清单内保留了旧机器绝对路径，所以命令显式传入当前 `--split-manifest` 和 `--input-root`。若窗口目录移动，索引和归一化器优先从 `window_dataset_manifest.json` 的同目录寻找。
++
++可选地图绑定：若 `source_cfg` 旧路径失效，且对应 sumocfg 和 net 已搬到新目录，设置一次：
++
++```bash
++# 仅在实际拥有对应地图目录时添加；net-file 仍按 sumocfg 内的相对路径解析。
++# DATA+=(--map-root /absolute/path/to/generated_scenarios_merge_7)
++```
++
++该目录按 sumocfg 文件名匹配；请在训练和采样时使用相同地图集合。地图缺失时以 mask 和 missing-map 表示，`road_valid_rate` 为 `null`。现有文件的哈希绑定用于防止训练过程中静默更换地图；这不等于证明当前地图与录制时文件完全相同。
++
++### 2. 先用合成小样本检查训练链路
++
++这一项仅检查 PyTorch 前向、反向、checkpoint 和采样，不衡量真实数据效果。
++
++```bash
++SMOKE="$RUN/stage4_synthetic_$(date +%Y%m%d_%H%M%S)"
++python -u embodied/envs/train_trajectory_diffusion.py \
++  --synthetic-smoke --output "$SMOKE" \
++  --epochs 4 --max-steps 16 --batch-size 4 \
++  --base-dim 16 --dim-mults 1 2 --condition-dim 32 \
++  --diffusion-steps 20 --sampling-steps 10 --samples 4 \
++  --device auto --seed 0 --log-every 4
++```
++
++成功报告包含 `optimization_steps: 16`、`checkpoint_roundtrip_verified: true`、`latest_checkpoint` 和 `best_checkpoint`。输出目录必须是新目录或空目录，重跑时换一个名称。
++
++### 3. 用真实 train/val 跑小规模检查
++
++先检查现有真实 train/val 能够完成训练和验证；不使用 `--allow-train-only-smoke`。
++
++```bash
++PROBE="$RUN/stage4_real_probe_$(date +%Y%m%d_%H%M%S)"
++python -u embodied/envs/train_trajectory_diffusion.py "${DATA[@]}" \
++  --output "$PROBE" --train-limit 128 --val-limit 32 \
++  --epochs 2 --max-steps 32 --batch-size 8 \
++  --base-dim 16 --dim-mults 1 2 --condition-dim 32 \
++  --diffusion-steps 100 --sampling-steps 20 --samples 4 \
++  --device auto --seed 0 --log-every 8
++
++EVAL="$PROBE/val_samples"
++python -u embodied/envs/sample_trajectories.py "${DATA[@]}" \
++  --checkpoint "$PROBE/best.pt" --output "$EVAL" \
++  --split val --limit 32 --batch-size 8 \
++  --samples 5 --sampling-steps 20 --export-limit 3 --device auto
++```
++
++128/32 是索引中各 split 的前缀窗口，用于快速检查，可能来自很少的父场景，不能作为总体质量估计。训练目标会按 seed、epoch、窗口身份从完整目标列表中选取；val/test 固定选择 anchor 时距自车最近的合格目标，同距离按 ID 排序。
++
++### 4. 再扩大训练并独立评估
++
++小规模真实检查成功后，再运行以下训练配置。20 个 epoch 是起始配置，需要根据真实验证曲线决定训练长度，不保证收敛。
++
++```bash
++TRAIN="$RUN/stage4_diffusion_train_$(date +%Y%m%d_%H%M%S)"
++python -u embodied/envs/train_trajectory_diffusion.py "${DATA[@]}" \
++  --output "$TRAIN" --train-limit 0 --val-limit 1024 \
++  --epochs 20 --batch-size 64 --num-workers 2 \
++  --diffusion-steps 100 --sampling-steps 20 --samples 4 \
++  --device auto --seed 0 --log-every 100
++
++# 用全部 val 窗口评估已选定 checkpoint；此步骤可能耗时较长。
++python -u embodied/envs/sample_trajectories.py "${DATA[@]}" \
++  --checkpoint "$TRAIN/best.pt" --output "$TRAIN/val_full" \
++  --split val --limit 0 --batch-size 64 --num-workers 2 \
++  --samples 5 --sampling-steps 20 --export-limit 3 --device auto
++```
++
++`--train-limit 0` 使用全部 train 窗口；`--val-limit 1024` 仍是前缀子集，仅用于每个 epoch 的快速监控。需要全量验证参与 checkpoint 选择时，从训练开始改成 `--val-limit 0`。默认值为 512，也属于子集。`best.pt` 按所配置 val 集上的 `minADE_m` 选择，`latest.pt` 保存最近一次更新；checkpoint 含优化器状态，但当前 CLI 尚未实现断点续训。
++
++固定配置和 checkpoint 后，再把独立评估命令改为 `--split test --limit 0` 并使用新输出目录。不要反复查看 test 来调整训练配置。
++
++## 数据和模型契约
++
++新增模块均位于 `embodied/envs/`，没有改动原有 Dreamer/RSSM、回放池、训练默认入口或上传的 DiffScene 文件。
++
++| 文件 | 作用 |
++| --- | --- |
++| `trajectory_dataset.py` | 固定清单校验、窗口读取、目标选择、历史条件、坐标逆变换、episode 局部采样 |
++| `trajectory_maps.py` | 有限容量地图缓存、静态车道特征、缺失标记和文件绑定检查 |
++| `trajectory_denoiser.py` | 改编 DiffScene 的时序残差去噪结构，加入历史/地图/类型条件 |
++| `trajectory_diffusion.py` | 一致的 0 到 T−1 扩散日程、噪声 MSE、DDPM 和 DDIM |
++| `trajectory_training.py` | 训练、验证、checkpoint、计时和可选绘图 |
++| `train_trajectory_diffusion.py` | 独立训练入口 |
++| `sample_trajectories.py` | 离线采样、指标和候选导出入口 |
++| `trajectory_metrics.py` | ADE/FDE、恒速基线、多样性和采样运动检查 |
++| `diffusion_candidate_adapter.py` | 保留来源与实测历史的 JSON/NPZ 候选导出 |
++
++现有配置为 H=11、F=30、dt=0.2。模型输入的车辆状态字段沿用 canonical 八维；条件为 ego/target/邻车的历史、对应 mask、可用静态地图和已知场景类型。邻车最多 8 辆，只按 anchor 历史距离排序。无效值置零并保留 mask；没有地图或邻车时编码仍然有限。
++
++未来目标 x/y 是训练标签 `[B,30,2]`，不会送入条件编码器。未来自车和其他 NPC 不进入条件或目标优先级计算。已有完整未来 mask 仅用于数据合格性筛选。采样输出 `[B,K,30,2]`，先按冻结的 train-only 参数反归一化，再还原世界坐标。
++
++没有照搬原版 TrafficModel 的 latent 轴：原版重复的 20 个 latent 样本不等于 30 个未来帧。本版复用时序残差、时间嵌入和条件注入结构；显式区分 batch、候选数和时间轴，并修正原版日程索引问题。不引入 LLM、RSSM、规则风险或其他引导项。
++
++索引保留字节偏移，episode 缓存默认每个进程最多 2 个，地图缓存最多 4 个。读取时检查固定 split 成员、源 NPZ 身份和哈希；索引或地图在启动校验后发生常规文件变更会报错。归一化器 ID 根据完整参数、拟合范围和 train 源文件身份重算验证，不允许更换参数后沿用原 ID。训练和独立采样还会核对 checkpoint 中的数据集指纹。
++
++## 指标与产物如何看
++
++训练输出 `config.json`、`metrics.jsonl`、`training_report.json`、`best.pt`、`latest.pt`。采样输出 `evaluation.json`，以及数量受 `--export-limit` 限制的 `candidate_*.json/.npz`；安装 Matplotlib 时同时输出 PNG。
++
++| 指标 | 定义 |
++| --- | --- |
++| `mean_ADE_m` / `mean_FDE_m` | 全部 K 条采样的平均误差，单位米 |
++| `minADE_m` / `minFDE_m` | 对每个窗口分别用真实未来挑选最优 K 条中的误差；两项可以来自不同候选，是 oracle 指标 |
++| `constant_velocity_ADE_m` / `constant_velocity_FDE_m` | 只使用目标 anchor 位置和速度的恒速预测基线 |
++| `endpoint_diversity_m` | K 条采样末端两两距离的平均值；大并不等于有效 |
++| `motion_valid_rate` | 采样点差分得到的运动量满足暂定阈值的比例 |
++| `road_valid_rate` | 有地图且已知位置参考时，采样车身 footprint 位于车道缓冲区的比例；无法检查时为 null |
++| `seconds_per_window` | 包含该窗口 K 条候选的采样耗时，CUDA 会同步计时；不含数据加载和绘图 |
++
++运动阈值暂定为速度 40 m/s、加速 4 m/s²、减速 8 m/s²、jerk 15 m/s³、偏航角速度 1 rad/s、横向加速度 4 m/s²。这些阈值尚未按 SlowCar1 等车型标定，不是 SUMO 车辆动力学验收。道路检查是离散采样检查，也不是连续碰撞或仿真验证。
++
++采样默认 DDIM，可用 `--method ddpm --sampling-steps T` 运行完整 DDPM；T 要与 checkpoint 中的 `diffusion_steps` 相同。记录 seed、checkpoint 哈希和实际 batch 大小/行号/K/窗口顺序，可在相同软件、设备和 batch 设置下复现本次采样；更改 batch 会改变随机数消费顺序。CPU 已验证保存前后固定种子逐元素相等，GPU 尚未验证。
++
++候选保留原始目标历史，`target_trajectory` 含实测 anchor 加 30 个生成点。世界位置继续使用录制时的 `center` 或 `front_bumper_center`，不会混用。速度由前一时间间隔的位置差分得到，低速时保持前一个朝向；这些是轨迹推导量。候选明确记录 `source_type: generated_candidate`、`simulation_verified: false`、`risk: null`，没有生成自车响应或其他车辆未来，不会自动写入 replay 或注入 SUMO。执行场景前还需独立的跟踪控制和闭环仿真验收。
++
++## 已获得的本地证据与边界
++
++完整测试通过 **182 项**（43.277 秒）。涵盖未来条件隔离、mask、目标可复现、坐标往返、源文件/索引/归一化器检查、地图变更、解析扩散系数、前向反向、DDPM/DDIM、保存加载、真实格式 train/val fixture、评估和候选来源。测试时使用现有 omnisafe 环境，并仅在测试进程通过 PYTHONPATH 补充 base 环境已有的 imageio 等旧项目依赖，没有安装或覆盖依赖。
++
++本地工作流使用 16 条合成训练样本和上传的一个真实 episode。真实窗口清单只含 train，因此显式使用 `--allow-train-only-smoke`，没有把它冒充 val/test。实际完成了合成 64 次更新、真实 40 次更新、两种 checkpoint 往返和独立采样导出。原始代码、DiffScene 参考代码和本地真实源数据哈希均保持不变。
++
++下表是这次短训的真实结果，表明生成质量尚未通过；没有通过裁剪、投影或挑选未来最优候选来掩盖发散采样。
++
++| 检查 | 更新次数 | 评估窗口 | 平均 ADE | minADE | 恒速 ADE | 运动有效率 |
++| --- | ---: | ---: | ---: | ---: | ---: | ---: |
++| 合成 val | 64 | 4 | 约 4158 m | 约 3272 m | 约 0.067 m | 0 |
++| 真实单 episode 的 train 子集 | 40 | 8 | 约 5610 m | 约 4970 m | 约 2.246 m | 0 |
++
++训练噪声损失下降只能说明优化链路有效，不能证明轨迹生成可用。下一步应先运行上述服务器真实 train/val 检查，再扩大训练，观察误差、恒速基线、物理比例和轨迹图。只有真实独立验证结果达标后，才进入候选执行与场景质量验收。当前不提供训练好的可用生成模型。
++
++完整本地证据位于 `docs/stage4_diffusion_validation/final_verified/verification.json`；补丁包中的 `stage4_validation.json` 是同一报告。服务器 951 个 episode 的全量训练、真实 val/test 质量、GPU 训练和 SUMO 闭环执行未在本地验证。

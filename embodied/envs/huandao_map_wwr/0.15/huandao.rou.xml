@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+
+<!--  Vehicle types  -->
+<vType id="egoType" accel="2.6" decel="4.5" sigma="0.5" length="4.36" width="1.95" maxSpeed="5.0 " guiShape="passenger" color="1,0,0"/>
+<!--  红色  -->
+<vType id="npcType" accel="2.2" decel="4.5" sigma="0.6" length="4.36" width="1.95" maxSpeed="3" guiShape="passenger" color="0,0,1"/>
+<!--  蓝色  -->
+<vType id="SlowCar" accel="1.0" decel="1.0" length="4.36" maxSpeed="3.5" width="1.95" minGap="1.5" vClass="passenger" color="1,1,0" carFollowModel="Krauss"/>
+<vType id="SlowCar1" accel="0.2" decel="1.0" length="4.36" maxSpeed="1.5" width="1.95" minGap="1.5" vClass="passenger" color="1,1,0" carFollowModel="Krauss"/>
+<vType id="FastCar" accel="4.0" decel="5.0" length="4.36" maxSpeed="5" minGap="1.5" width="1.95" vClass="passenger" color="1,1,0"/>
+<vType id="Auto" accel="3.0" decel="5.0" length="4.36" maxSpeed="3.5" minGap="1.5" width="1.95" vClass="passenger" color="0,1,0"/>
+<route id="merge_auto" edges="-138#0 -138#1 -139 79 78"/>
+<route id="merge_1" edges="82 81 80 79 78"/>
+<route id="merge_2" edges="81 80 79 78"/>
+<route id="merge_3" edges="-80 -81 -82"/>
+<!--  Ego vehicle: 禁用变道 lcMode="0"  -->
+<vehicle id="Auto" type="egoType" route="merge_auto" depart="0" departLane="0" departPos="1" departSpeed="3"/>
+<vehicle id="obs_1" type="SlowCar1" route="merge_2" depart="0" departLane="0" departPos="10" departSpeed="0"/>
+         
+<!-- merge1 方向 -->
+<flow id="npc_huan" type="npcType" route="merge_1"
+      begin="0" end="600"
+      probability="0.15"
+      departPos="random_free"
+      departLane="random"
+      departSpeed="random"/>
+
+<!-- merge 2 方向 -->
+<flow id="npc_huan1" type="npcType" route="merge_2"
+      begin="0" end="600"
+      probability="0.15"
+      departPos="random_free"
+      departLane="random"
+      departSpeed="random"/>
+
+<!-- merge 3（原来 huan14route，对应方向不变） -->
+<flow id="bei_nan" type="npcType" route="merge_3"
+      begin="0" end="600"
+      probability="0.15"
+      departPos="random_free"
+      departLane="random"
+      departSpeed="random"/>
+
+
+
+</routes>

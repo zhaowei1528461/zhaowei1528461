@@ -1,0 +1,84 @@
+{
+  "source": "docs/stage3_uploaded_debug/sumo_fpi_log/20261021-105954_osrp_sumo_lag_vector_danger_sumo_None_0/posttrain_episode_pool/c4c745e14ccbd182d2815682.npz",
+  "source_sha256": "0652a3fb0e59e6860a8c5bdb5aedb08b729d192317776764fa729a6eedc905cf",
+  "reference_heading": "target",
+  "seed": 0,
+  "budget_per_method": 256,
+  "environment": {
+    "python": "3.8.3",
+    "numpy": "1.24.4"
+  },
+  "windows": [
+    {
+      "window": 0,
+      "target_id": "obs_003",
+      "target_type": "SlowCar1",
+      "valid_counts": {
+        "random": 22,
+        "cem": 114
+      },
+      "max_rule_risk": 0.0,
+      "exit_code": 0
+    },
+    {
+      "window": 100,
+      "target_id": "obs_002",
+      "target_type": "npcType",
+      "valid_counts": {
+        "random": 5,
+        "cem": 44
+      },
+      "max_rule_risk": 0.048520040107627026,
+      "exit_code": 0
+    },
+    {
+      "window": 200,
+      "target_id": "obs_026",
+      "target_type": "SlowCar1",
+      "valid_counts": {
+        "random": 11,
+        "cem": 98
+      },
+      "max_rule_risk": 0.03373986214193304,
+      "exit_code": 0
+    },
+    {
+      "window": 300,
+      "target_id": "obs_042",
+      "target_type": "SlowCar1",
+      "valid_counts": {
+        "random": 11,
+        "cem": 98
+      },
+      "max_rule_risk": 0.05019168456963158,
+      "exit_code": 0
+    },
+    {
+      "window": 400,
+      "target_id": "obs_064",
+      "target_type": "FastCar",
+      "valid_counts": {
+        "random": 2,
+        "cem": 17
+      },
+      "max_rule_risk": 0.027205257273625987,
+      "exit_code": 0
+    },
+    {
+      "window": 500,
+      "target_id": "obs_019",
+      "target_type": "SlowCar1",
+      "valid_counts": {
+        "random": 12,
+        "cem": 121
+      },
+      "max_rule_risk": 0.9,
+      "exit_code": 0
+    }
+  ],
+  "simulation_verified": false,
+  "same_seed_repeat_verified": true,
+  "source_unchanged": true,
+  "export_roundtrips_verified": true,
+  "all_requested_windows_have_candidates_for_both_methods": true
+}
